@@ -2,7 +2,7 @@
   "name": "ai-commit-generator-humaid",
   "displayName": "AI Commit Message Generator by Humaid",
   "description": "Auto-generate commit messages from staged diffs using any OpenAI-compatible LLM",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "publisher": "humaid-abuzinjal",
   "engines": {
     "vscode": "^1.85.0"
@@ -22,7 +22,7 @@
       {
         "command": "ai-commit.generateCommitMessage",
         "title": "AI Commit Generator: Stage All & Generate Message",
-        "icon": "$(sparkle)"
+        "icon": "$(wand)"
       }
     ],
     "menus": {

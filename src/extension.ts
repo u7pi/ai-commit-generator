@@ -9,7 +9,9 @@ import { URL } from "url";
 function getConfig() {
   const cfg = vscode.workspace.getConfiguration("aiCommit");
   return {
-    apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1").replace(/\/$/, ""),
+    apiBaseUrl: cfg
+      .get<string>("apiBaseUrl", "https://api.openai.com/v1")
+      .replace(/\/$/, ""),
     apiKey: cfg.get<string>("apiKey", ""),
     model: cfg.get<string>("model", "gpt-4o"),
     systemPrompt: cfg.get<string>("systemPrompt", ""),
@@ -23,7 +25,9 @@ function getWorkspaceRoot(): string | null {
 }
 
 function runGit(cwd: string, args: string): string {
-  const gitPath = vscode.workspace.getConfiguration("aiCommit").get<string>("gitPath", "git");
+  const gitPath = vscode.workspace
+    .getConfiguration("aiCommit")
+    .get<string>("gitPath", "git");
   return execSync(`"${gitPath}" ${args}`, { cwd, encoding: "utf8" });
 }
 
@@ -44,14 +48,17 @@ function callLLM(
   apiKey: string,
   model: string,
   systemPrompt: string,
-  diff: string
+  diff: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       model,
-      max_tokens: 256,
+      max_tokens: 2048,
       messages: [
-        { role: "user", content: `${systemPrompt}\n\nHere is the git diff:\n\n${diff}` },
+        {
+          role: "user",
+          content: `${systemPrompt}\n\nHere is the git diff:\n\n${diff}`,
+        },
       ],
     });
 
@@ -79,7 +86,8 @@ function callLLM(
             reject(new Error(json.error.message || JSON.stringify(json.error)));
             return;
           }
-          const message = json.choices?.[0]?.message?.content?.trim();
+          const choice = json.choices?.[0]?.message;
+          const message = (choice?.content ?? choice?.reasoning ?? "").trim();
           if (!message) {
             reject(new Error("Empty response from API. Raw: " + body));
             return;
@@ -111,10 +119,13 @@ async function generateCommitMessage() {
   if (!config.apiKey) {
     const action = await vscode.window.showErrorMessage(
       "AI Commit: No API key configured.",
-      "Open Settings"
+      "Open Settings",
     );
     if (action === "Open Settings") {
-      vscode.commands.executeCommand("workbench.action.openSettings", "aiCommit.apiKey");
+      vscode.commands.executeCommand(
+        "workbench.action.openSettings",
+        "aiCommit.apiKey",
+      );
     }
     return;
   }
@@ -133,7 +144,9 @@ async function generateCommitMessage() {
         // 2. Get the staged diff
         const rawDiff = runGit(root, "diff --cached");
         if (!rawDiff.trim()) {
-          vscode.window.showWarningMessage("AI Commit: Nothing staged to commit.");
+          vscode.window.showWarningMessage(
+            "AI Commit: Nothing staged to commit.",
+          );
           return;
         }
 
@@ -146,11 +159,12 @@ async function generateCommitMessage() {
           config.apiKey,
           config.model,
           config.systemPrompt,
-          diff
+          diff,
         );
 
         // 5. Auto-fill the SCM commit message box
-        const gitExtension = vscode.extensions.getExtension("vscode.git")?.exports;
+        const gitExtension =
+          vscode.extensions.getExtension("vscode.git")?.exports;
         const api = gitExtension?.getAPI(1);
         const repo = api?.repositories?.[0];
 
@@ -162,14 +176,14 @@ async function generateCommitMessage() {
           // Fallback: copy to clipboard
           await vscode.env.clipboard.writeText(message);
           vscode.window.showInformationMessage(
-            "AI Commit: Message copied to clipboard (SCM repo not found)."
+            "AI Commit: Message copied to clipboard (SCM repo not found).",
           );
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`AI Commit: ${msg}`);
       }
-    }
+    },
   );
 }
 
@@ -177,7 +191,10 @@ async function generateCommitMessage() {
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
-    vscode.commands.registerCommand("ai-commit.generateCommitMessage", generateCommitMessage)
+    vscode.commands.registerCommand(
+      "ai-commit.generateCommitMessage",
+      generateCommitMessage,
+    ),
   );
 }
 
