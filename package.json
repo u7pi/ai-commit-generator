@@ -1,14 +1,27 @@
 {
   "name": "ai-commit-generator-humaid",
   "displayName": "AI Commit Message Generator by Humaid",
-  "description": "Auto-generate commit messages from staged diffs using any OpenAI-compatible LLM",
-  "version": "0.1.0",
+  "description": "Auto-generate Git commit messages from staged diffs using any OpenAI-compatible LLM",
+  "version": "0.1.1",
   "publisher": "humaid-abuzinjal",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "git",
+    "commit",
+    "commit message",
+    "ai commit",
+    "conventional commits",
+    "git automation",
+    "source control",
+    "openai",
+    "gemini",
+    "ollama",
+    "productivity"
   ],
   "icon": "icon.png",
   "repository": {
