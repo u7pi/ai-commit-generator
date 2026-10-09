@@ -3,7 +3,7 @@
   "displayName": "AI Commit Generator",
   "description": "基于暂存的代码差异（diff），使用任意兼容 OpenAI 的大模型自动生成 Git 提交信息并填入源代码管理输入框。Auto-generate Git commit messages from staged diffs using any OpenAI-compatible LLM.",
   "version": "0.2.1",
-  "publisher": "humaid-abuzinjal",
+  "publisher": "u7pi",
   "engines": {
     "vscode": "^1.85.0"
   },
