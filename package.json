@@ -26,7 +26,7 @@
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/humaid24/ai-commit-generator"
+    "url": "https://github.com/u7pi/ai-commit-generator"
   },
   "activationEvents": [],
   "main": "./out/extension.js",

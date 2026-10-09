@@ -5,7 +5,7 @@
 A VSCode extension that reads your staged diff and auto-generates a commit message using any OpenAI-compatible LLM — filling it directly into the Source Control input box.
 
 🔗 **Marketplace:** https://marketplace.visualstudio.com/items?itemName=humaid-abuzinjal.ai-commit-generator-humaid
-🐙 **GitHub:** https://github.com/humaid24/ai-commit-generator
+🐙 **GitHub:** https://github.com/u7pi/ai-commit-generator
 
 ---
 
@@ -118,7 +118,7 @@ VSCode 扩展进程可能没有继承系统的 PATH。将 `aiCommit.gitPath` 设
 ## 开发 / Development
 
 ```bash
-git clone https://github.com/humaid24/ai-commit-generator
+git clone https://github.com/u7pi/ai-commit-generator
 cd ai-commit-generator
 npm install
 npm run compile
