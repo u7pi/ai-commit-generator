@@ -1,6 +1,8 @@
 # AI Commit Generator
 
-A VSCode extension that stages all changes, diffs them, and auto-generates a commit message using any OpenAI-compatible LLM — filling it directly into the Source Control input box.
+A VSCode extension that reads your staged diff and auto-generates a commit message using any OpenAI-compatible LLM — filling it directly into the Source Control input box.
+
+使用任意兼容 OpenAI 的大模型，读取已暂存的 diff 并自动生成 Git 提交信息，直接填入源代码管理输入框。
 
 🔗 **Marketplace:** https://marketplace.visualstudio.com/items?itemName=humaid-abuzinjal.ai-commit-generator-humaid
 🐙 **GitHub:** https://github.com/humaid24/ai-commit-generator
@@ -11,10 +13,9 @@ A VSCode extension that stages all changes, diffs them, and auto-generates a com
 
 Instead of manually exporting your diff and pasting it into an AI chat, this extension does it all in one click:
 
-1. Runs `git add --all` to stage everything
-2. Gets the staged diff
-3. Sends it to your configured LLM with your custom prompt
-4. Auto-fills the commit message box in the Source Control panel
+1. Reads the staged diff (`git diff --cached`) — stage your changes first
+2. Sends it to your configured LLM with your custom prompt
+3. Auto-fills the commit message box in the Source Control panel
 
 You just review and hit **Commit** ✓
 
@@ -23,9 +24,10 @@ You just review and hit **Commit** ✓
 ## Usage
 
 1. Write your code
-2. Click the **✨ sparkle button** in the Source Control panel title bar
-3. Review the generated commit message
-4. Press **Commit** ✓
+2. Stage your changes in the Source Control panel
+3. Click the **✨ sparkle button** in the Source Control panel title bar
+4. Review the generated commit message
+5. Press **Commit** ✓
 
 ---
 
@@ -35,13 +37,13 @@ You just review and hit **Commit** ✓
 
 1. Open VSCode
 2. Go to Extensions (`Ctrl + Shift + X`)
-3. Search `AI Commit Generator by Humaid`
+3. Search `AI Commit Generator`
 4. Click **Install**
 
 **From VSIX (manual):**
 
 ```bash
-code --install-extension ai-commit-generator-humaid-*.vsix
+code --install-extension ai-commit-generator-*.vsix
 ```
 
 ---
@@ -112,21 +114,21 @@ VSCode extensions run in a process that may not have Git in its PATH. Fix it by 
 ```bash
 git clone https://github.com/humaid24/ai-commit-generator
 cd ai-commit-generator
-bun install
-bun run compile
+npm install
+npm run compile
 # Press F5 in VSCode to launch the Extension Development Host
 ```
 
 To package as a `.vsix`:
 
 ```bash
-bunx @vscode/vsce package
+npx @vscode/vsce package
 ```
 
 To publish:
 
 ```bash
-bunx @vscode/vsce publish --no-dependencies
+npx @vscode/vsce publish --no-dependencies
 ```
 
 ---

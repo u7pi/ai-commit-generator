@@ -1,0 +1,10 @@
+{
+  "command.generate.title": "AI Commit Generator：根据已暂存的更改生成提交信息",
+  "config.title": "AI Commit",
+  "config.apiBaseUrl.description": "兼容 OpenAI 的 API 接口地址（如 https://api.deepseek.com/v1、https://api.anthropic.com/v1）",
+  "config.apiKey.description": "所配置接口的 API Key",
+  "config.model.description": "使用的模型名称（如 deepseek-chat、claude-opus-4-6、gpt-4o）",
+  "config.systemPrompt.description": "发送给大模型的系统提示词，可自定义提交信息格式",
+  "config.maxDiffLines.description": "发送前截断 diff 的行数（防止超出模型 token 限制）",
+  "config.gitPath.description": "git 可执行文件路径。若 git 不在 PATH 中请修改（如 C:\\Program Files\\Git\\bin\\git.exe）"
+}

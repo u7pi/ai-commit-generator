@@ -4,6 +4,11 @@ import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
 
+// ─── i18n ───────────────────────────────────────────────────────────────────
+
+const isZh = vscode.env.language.toLowerCase().startsWith("zh");
+const t = (zh: string, en: string) => (isZh ? zh : en);
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getConfig() {
@@ -105,23 +110,76 @@ function callLLM(
   });
 }
 
-// ─── Main Command ─────────────────────────────────────────────────────────────
+// ─── Main Command ───────────────────────────────────────────────────────────
 
 async function generateCommitMessage() {
   const root = getWorkspaceRoot();
   if (!root) {
-    vscode.window.showErrorMessage("AI Commit: No workspace folder open.");
+    vscode.window.showErrorMessage(
+      t("AI Commit：未打开工作区文件夹。", "AI Commit: No workspace folder open."),
+    );
     return;
   }
 
-  // Validate config
+  // Resolve the SCM repo up front — needed for both the no-changes hint and
+  // filling in the generated message.
+  const gitExtension = vscode.extensions.getExtension("vscode.git")?.exports;
+  const api = gitExtension?.getAPI(1);
+  const repo = api?.repositories?.[0];
+
+  // Diff the staged changes before anything else, so the empty-diff path
+  // never touches config validation or the AI. Never stage anything
+  // ourselves — only what the user already staged is analyzed.
+  let rawDiff: string;
+  try {
+    rawDiff = runGit(root, "diff --cached");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    vscode.window.showErrorMessage(
+      t(`AI Commit：Git 操作失败：${msg}`, `AI Commit: Git operation failed: ${msg}`),
+    );
+    return;
+  }
+
+  if (!rawDiff.trim()) {
+    // Distinguish "nothing at all" from "changes exist but none are staged".
+    let hasChanges = false;
+    try {
+      hasChanges = runGit(root, "status --porcelain").trim().length > 0;
+    } catch {
+      // ignore — fall back to the generic hint
+    }
+    const hint = hasChanges
+      ? t(
+          "⚠ 没有已暂存的更改，请先暂存更改",
+          "⚠ No staged changes — stage your changes first",
+        )
+      : t("⚠ 没有可提交的更改", "⚠ No changes to commit");
+    const warning = hasChanges
+      ? t(
+          "AI Commit：未检测到已暂存的更改，已跳过 AI 生成。",
+          "AI Commit: No staged changes detected, AI call skipped.",
+        )
+      : t(
+          "AI Commit：未检测到任何更改，已跳过 AI 生成。",
+          "AI Commit: No changes detected, AI call skipped.",
+        );
+    if (repo) {
+      repo.inputBox.value = hint;
+      vscode.commands.executeCommand("workbench.view.scm");
+    }
+    vscode.window.showWarningMessage(warning);
+    return;
+  }
+
+  // Only validate config once we have an actual diff to send.
   const config = getConfig();
   if (!config.apiKey) {
     const action = await vscode.window.showErrorMessage(
-      "AI Commit: No API key configured.",
-      "Open Settings",
+      t("AI Commit：未配置 API Key。", "AI Commit: No API key configured."),
+      t("打开设置", "Open Settings"),
     );
-    if (action === "Open Settings") {
+    if (action) {
       vscode.commands.executeCommand(
         "workbench.action.openSettings",
         "aiCommit.apiKey",
@@ -133,27 +191,16 @@ async function generateCommitMessage() {
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.SourceControl,
-      title: "Generating commit message…",
+      title: t(
+        "AI Commit Generator：正在生成提交信息…",
+        "AI Commit Generator: Generating commit message…",
+      ),
       cancellable: false,
     },
     async () => {
       try {
-        // 1. Stage everything
-        runGit(root, "add --all");
-
-        // 2. Get the staged diff
-        const rawDiff = runGit(root, "diff --cached");
-        if (!rawDiff.trim()) {
-          vscode.window.showWarningMessage(
-            "AI Commit: Nothing staged to commit.",
-          );
-          return;
-        }
-
-        // 3. Truncate if needed
         const diff = truncateDiff(rawDiff, config.maxDiffLines);
 
-        // 4. Call the LLM
         const message = await callLLM(
           config.apiBaseUrl,
           config.apiKey,
@@ -161,12 +208,6 @@ async function generateCommitMessage() {
           config.systemPrompt,
           diff,
         );
-
-        // 5. Auto-fill the SCM commit message box
-        const gitExtension =
-          vscode.extensions.getExtension("vscode.git")?.exports;
-        const api = gitExtension?.getAPI(1);
-        const repo = api?.repositories?.[0];
 
         if (repo) {
           repo.inputBox.value = message;
@@ -176,12 +217,17 @@ async function generateCommitMessage() {
           // Fallback: copy to clipboard
           await vscode.env.clipboard.writeText(message);
           vscode.window.showInformationMessage(
-            "AI Commit: Message copied to clipboard (SCM repo not found).",
+            t(
+              "AI Commit：已复制到剪贴板（未找到 Git 仓库）。",
+              "AI Commit: Message copied to clipboard (SCM repo not found).",
+            ),
           );
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(`AI Commit: ${msg}`);
+        vscode.window.showErrorMessage(
+          t(`AI Commit：${msg}`, `AI Commit: ${msg}`),
+        );
       }
     },
   );

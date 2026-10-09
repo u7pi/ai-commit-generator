@@ -1,0 +1,10 @@
+{
+  "command.generate.title": "AI Commit Generator: Generate Commit Message from Staged Changes",
+  "config.title": "AI Commit",
+  "config.apiBaseUrl.description": "Base URL of the OpenAI-compatible API endpoint (e.g. https://api.deepseek.com/v1, https://api.anthropic.com/v1)",
+  "config.apiKey.description": "Your API key for the configured endpoint",
+  "config.model.description": "Model name to use (e.g. deepseek-chat, claude-opus-4-6, gpt-4o)",
+  "config.systemPrompt.description": "System prompt sent to the LLM. Customize this to match your commit message format.",
+  "config.maxDiffLines.description": "Truncate the diff to this many lines before sending (prevents token overflows)",
+  "config.gitPath.description": "Path to git executable. Change this if git is not in your PATH (e.g. C:\\Program Files\\Git\\bin\\git.exe)"
+}
