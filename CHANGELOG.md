@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Surface the `aiCommit.apiKey` setting again: a key entered there is imported into SecretStorage with confirmation and the plaintext field is cleared. A settings key that differs from the stored key can replace it through the same one-time prompt; an identical value is cleared silently.
+- Show the built-in English system prompt as the Settings default for `aiCommit.systemPrompt`; the `zh-cn` display language still uses the Chinese prompt until the setting is customized.
+- Turn API 401/403 failures into an actionable error offering **Set API Key** instead of surfacing the provider's raw response.
+- Resolve the API key before the progress notification starts, so the secure-storage migration or update confirmation is never hidden behind the "Generating" spinner.
+
 ## 0.3.0
 
 - Prevent duplicate generation per repository and preserve drafts edited during generation or present when no changes are staged.

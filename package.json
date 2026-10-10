@@ -2,7 +2,7 @@
   "name": "simple-ai-committer",
   "displayName": "Simple AI Committer",
   "description": "A simple, practical AI commit message generator. Turn staged Git diffs into commit messages using any OpenAI-compatible LLM.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "u7pi",
   "engines": {
     "vscode": "^1.85.0"
@@ -70,8 +70,7 @@
         "aiCommit.apiKey": {
           "type": "string",
           "default": "",
-          "description": "%config.apiKey.description%",
-          "markdownDeprecationMessage": "%config.apiKey.deprecation%"
+          "description": "%config.apiKey.description%"
         },
         "aiCommit.model": {
           "type": "string",
@@ -80,7 +79,7 @@
         },
         "aiCommit.systemPrompt": {
           "type": "string",
-          "default": "",
+          "default": "# Git Commit Message Guide\n\n## Role\nYou are a Git commit message assistant. Output only the commit message, with no explanation, greeting, or extra content.\n\n## Output format\n<type>(<scope>): <subject>\n\n<body>\n\n## Type reference\n| Type     | Emoji | Description         |\n| -------- | ----- | ------------------- |\n| feat     | ✨    | New feature         |\n| fix      | 🐛    | Bug fix             |\n| docs     | 📝    | Documentation       |\n| style    | 💄    | Code formatting     |\n| refactor | ♻️    | Refactoring         |\n| perf     | ⚡️   | Performance         |\n| test     | ✅    | Tests               |\n| build    | 📦    | Build system        |\n| ci       | 👷    | CI configuration    |\n| chore    | 🔧    | Other maintenance   |\n\n## Rules\n1. Use an imperative subject with a lowercase first letter and no trailing period\n2. Use a lowercase English scope, such as auth, api, or ui\n3. Use bullet points in the body to describe reasons and details when needed\n4. Output only the commit message, without markdown code fences\n5. Write the subject and body in English, regardless of the language in the diff",
           "description": "%config.systemPrompt.description%",
           "editPresentation": "multilineText"
         },

@@ -131,10 +131,14 @@ class ConfigManager {
 
 function getConfig() {
   const cfg = ConfigManager.getInstance();
+  // The Settings UI shows the built-in English prompt as this setting's
+  // default; treat that exact text as "not customized" so the locale-aware
+  // default prompt still applies until the user edits it.
+  const rawPrompt = cfg.get<string>("systemPrompt", "");
   const config = {
     apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1"),
     model: cfg.get<string>("model", "gpt-4o"),
-    systemPrompt: cfg.get<string>("systemPrompt", ""),
+    systemPrompt: rawPrompt === DEFAULT_SYSTEM_PROMPT_EN ? "" : rawPrompt,
     temperature: cfg.get<number>("temperature", 0.3),
     maxDiffChars: cfg.get<number>("maxDiffChars", 6000),
     timeoutMs: cfg.get<number>("timeoutMs", 30000),
@@ -154,7 +158,8 @@ function getConfig() {
 
 const API_KEY = "aiCommit.apiKey";
 let secrets: vscode.SecretStorage;
-let migrationPrompted = false;
+// Plaintext settings value we already prompted for; a changed value prompts again.
+let promptedValue: string | undefined;
 let migration: Promise<string> | undefined;
 
 async function setApiKey() {
@@ -182,6 +187,12 @@ async function clearApiKey() {
   }
 }
 
+async function clearLegacyKey(config: vscode.WorkspaceConfiguration): Promise<void> {
+  const target = config.inspect<string>("apiKey")?.workspaceValue !== undefined
+    ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+  await config.update("apiKey", undefined, target);
+}
+
 async function getApiKey(): Promise<string> {
   let stored: string | undefined;
   try {
@@ -189,29 +200,36 @@ async function getApiKey(): Promise<string> {
   } catch {
     throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
   }
-  if (stored) return stored;
-  if (migration) return migration;
   const config = vscode.workspace.getConfiguration("aiCommit");
   const legacy = config.get<string>("apiKey", "");
-  if (!legacy || migrationPrompted) return legacy;
-  migrationPrompted = true;
+  if (!legacy) return stored ?? "";
+  if (stored && legacy === stored) {
+    // The plaintext setting merely duplicates the stored key — clear it.
+    try {
+      await clearLegacyKey(config);
+    } catch {
+      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但原明文设置未能清除。", "AI Commit: Key saved securely, but the original plaintext setting could not be cleared."));
+    }
+    return stored;
+  }
+  if (migration) return migration;
+  if (promptedValue === legacy) return stored ?? legacy;
+  promptedValue = legacy;
   migration = (async () => {
     const migrate = t("迁移并清除", "Migrate and clear");
-    const choice = await vscode.window.showWarningMessage(
-      t("AI Commit：发现明文 API Key，是否迁移到安全存储并清除原设置？", "AI Commit: A plaintext API key was found. Migrate it to secure storage and clear the original setting?"),
-      migrate, t("暂不", "Not now"),
-    );
-    if (choice !== migrate) return legacy;
+    const message = stored
+      ? t("AI Commit：设置中的明文 API Key 与安全存储中的不同，是否更新安全存储并清除原设置？", "AI Commit: The settings API key differs from the stored one. Update secure storage and clear the original setting?")
+      : t("AI Commit：发现明文 API Key，是否迁移到安全存储并清除原设置？", "AI Commit: A plaintext API key was found. Migrate it to secure storage and clear the original setting?");
+    const choice = await vscode.window.showWarningMessage(message, migrate, t("暂不", "Not now"));
+    if (choice !== migrate) return stored ?? legacy;
     try {
       await secrets.store(API_KEY, legacy);
     } catch {
       vscode.window.showErrorMessage(t("AI Commit：密钥迁移失败，原设置已保留。", "AI Commit: Key migration failed; the original setting was preserved."));
-      return legacy;
+      return stored ?? legacy;
     }
     try {
-      const target = config.inspect<string>("apiKey")?.workspaceValue !== undefined
-        ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-      await config.update("apiKey", undefined, target);
+      await clearLegacyKey(config);
     } catch {
       vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但原明文设置未能清除。", "AI Commit: Key saved securely, but the original plaintext setting could not be cleared."));
     }
@@ -402,9 +420,11 @@ function callLLM(
       signal?.removeEventListener("abort", onAbort);
       if (error) {
         req.destroy();
+        const statusCode = (error as Error & { statusCode?: number }).statusCode;
         if (apiKey && error.message.includes(apiKey)) {
-          const redacted = new Error(redact(error.message));
+          const redacted = new Error(redact(error.message)) as Error & { statusCode?: number };
           redacted.name = error.name;
+          redacted.statusCode = statusCode;
           reject(redacted);
         } else {
           reject(error);
@@ -427,11 +447,11 @@ function callLLM(
         let errBody = "";
         res.on("data", (chunk) => (errBody += chunk));
         res.on("end", () => {
-          finish(
-            new Error(
-              `API request failed (${res.statusCode}): ${redact(errBody).slice(0, 300)}`,
-            ),
-          );
+          const error = new Error(
+            `API request failed (${res.statusCode}): ${redact(errBody).slice(0, 300)}`,
+          ) as Error & { statusCode?: number };
+          error.statusCode = res.statusCode;
+          finish(error);
         });
         return;
       }
@@ -559,6 +579,17 @@ async function generateCommitMessage(arg?: any) {
       return;
     }
 
+    // Resolve the key before showing progress: the migration/update
+    // confirmation must not wait invisibly behind the progress notification.
+    let apiKey: string;
+    try {
+      apiKey = await getApiKey();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(t(`AI Commit：${msg}`, `AI Commit: ${msg}`));
+      return;
+    }
+
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -585,7 +616,6 @@ async function generateCommitMessage(arg?: any) {
             : undefined;
           if (abortCtrl.signal.aborted) return;
           const diff = truncateDiff(rawDiff, config.maxDiffChars, summary);
-          const apiKey = await getApiKey();
 
           const message = await callLLM(
             config.apiBaseUrl,
@@ -619,6 +649,20 @@ async function generateCommitMessage(arg?: any) {
           }
         } catch (err: unknown) {
           if (err instanceof Error && err.name === "AbortError") return;
+          const statusCode = (err as { statusCode?: number })?.statusCode;
+          if (statusCode === 401 || statusCode === 403) {
+            // Surface an actionable hint instead of the provider's raw error.
+            const setKey = t("设置 API Key", "Set API Key");
+            const choice = await vscode.window.showErrorMessage(
+              t(
+                `AI Commit：API 认证失败（${statusCode}），请检查 API Key 是否有效。`,
+                `AI Commit: API authentication failed (${statusCode}). Check that the API key is valid.`,
+              ),
+              setKey,
+            );
+            if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+            return;
+          }
           const msg = err instanceof Error ? err.message : String(err);
           Logger.error(`Failed to generate commit message: ${msg}`, err);
           vscode.window.showErrorMessage(

@@ -9,9 +9,9 @@ Open VS Code Settings and search for `aiCommit`. For connection examples, see [P
 | Setting | Description | Default |
 | --- | --- | --- |
 | `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.openai.com/v1` |
-| `aiCommit.apiKey` | Deprecated plaintext fallback, used only when SecretStorage has no key | Empty |
+| `aiCommit.apiKey` | Convenience input for the API key; on first use it is moved to SecretStorage and this field is cleared | Empty |
 | `aiCommit.model` | Model ID supported by your endpoint | `gpt-4o` |
-| `aiCommit.systemPrompt` | Custom system prompt; leave empty to use the built-in language-specific prompt | Empty |
+| `aiCommit.systemPrompt` | Custom system prompt; until edited, the built-in prompt is used (Chinese for the `zh-cn` display language, English otherwise). The Settings default shows the built-in English prompt | Built-in prompt |
 | `aiCommit.maxDiffChars` | Positive integer budget for diff content, including summaries and truncation notices | `6000` |
 | `aiCommit.temperature` | `0–2`, or `-1` to omit it for models that require a fixed temperature | `0.3` |
 | `aiCommit.timeoutMs` | Total request deadline, including connection and response reception; integer `1–2147483647` milliseconds | `30000` |
@@ -27,11 +27,13 @@ Base URLs may include query parameters. The extension appends `/chat/completions
 
 ## API key storage and migration
 
-Run **Simple AI Committer: Set API Key** to enter a key in a password input box. Cancelled or blank input leaves the stored key unchanged. The extension stores a single key in VS Code SecretStorage; it is shared across workspaces and API base URLs and is not synced across machines. Configure it separately on each machine and update it when switching providers.
+Enter the key in the `aiCommit.apiKey` setting or run **Simple AI Committer: Set API Key** to type it in a password input box. Cancelled or blank command input leaves the stored key unchanged. The extension keeps a single key in VS Code SecretStorage; it is shared across workspaces and API base URLs and is not synced across machines. Configure it separately on each machine and update it when switching providers.
 
-A stored key takes priority over `aiCommit.apiKey`. If no stored key exists, the effective legacy setting remains supported. The first generation that needs a legacy key offers **Migrate and clear** or **Not now**, once per window. Migration saves the key before clearing its original user or workspace setting. A storage failure leaves the original setting intact; a clearing failure reports that the plaintext setting remains. Other settings scopes are not removed. No staged changes means no migration prompt.
+The first generation that needs a plaintext settings key offers **Migrate and clear** or **Not now**, once per window per value. Migration saves the key before clearing its original user or workspace setting. A storage failure leaves the original setting intact; a clearing failure reports that the plaintext setting remains. Other settings scopes are not removed. No staged changes means no migration prompt.
 
-**Simple AI Committer: Clear Stored API Key** deletes only the SecretStorage value. Legacy settings, if present, become effective again. To send no Authorization header, clear the stored key and ensure the effective legacy key is empty.
+If the stored key and the settings key differ, the same one-time prompt offers to update secure storage with the settings key. A settings key identical to the stored key is cleared without prompting. Declining keeps the stored key (or falls back to the settings key when nothing is stored).
+
+**Simple AI Committer: Clear Stored API Key** deletes only the SecretStorage value. The settings field, if present, becomes effective again. To send no Authorization header, clear the stored key and ensure the effective settings key is empty.
 
 ## Long diffs and generation behavior
 
@@ -51,10 +53,10 @@ The built-in prompt requests Conventional Commits:
 
 The subject and body are requested in English for all display languages except `zh-cn`, which requests Simplified Chinese. The output language follows the VS Code display language, regardless of the language in the diff. The type and scope remain in English.
 
-A non-empty `aiCommit.systemPrompt` replaces the built-in prompt without modification. For example, use the following prompt to request English with any display language:
+A customized `aiCommit.systemPrompt` — any value other than the unchanged built-in default — replaces the built-in prompt without modification. For example, use the following prompt to request English with any display language:
 
 ```text
 Generate a Conventional Commit message from the diff. Always write the subject and body in English. Output only the commit message.
 ```
 
-An explicitly saved prompt from an older version is retained. Clear it to use the new built-in language selection.
+An explicitly saved prompt from an older version is retained. Reset the setting to its default value in the Settings UI to return to the built-in language selection; the displayed English default counts as unset.

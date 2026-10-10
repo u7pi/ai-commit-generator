@@ -7,3 +7,4 @@ scripts/**
 .gitignore
 tsconfig.json
 **/*.map
+AGENTS.md

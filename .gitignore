@@ -34,3 +34,6 @@ npm-debug.log*
 # Temporary files
 .tmp/
 temp/
+
+# Agent workflow notes (local only, never commit)
+AGENTS.md

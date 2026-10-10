@@ -9,13 +9,13 @@ const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, callLLM, generateCommitMessage, selectApiBaseUrl };",
+  source + "\nexports.test = { getRepo, getDiffStaged, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
 function load(config = {}, repositories = [], diff = "+ staged change", language = "en", options = {}) {
   const observed = {
-    errors: [], warnings: [], infos: [], logs: [], progress: [], clipboard: [], gitOptions: [], diffCalls: 0, statusCalls: 0, updates: [],
+    errors: [], warnings: [], infos: [], logs: [], progress: [], clipboard: [], gitOptions: [], diffCalls: 0, statusCalls: 0, updates: [], executed: [],
     commands: new Map(), secretValues: new Map(options.secureKey ? [["aiCommit.apiKey", options.secureKey]] : []),
     secretOps: [], summaryArgs: [], inputOptions: [],
   };
@@ -39,7 +39,11 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
     },
     extensions: { getExtension: () => ({ exports: { getAPI: () => ({ repositories }) } }) },
     window: {
-      showErrorMessage: async (message) => observed.errors.push(message),
+      showErrorMessage: async (message, ...items) => {
+        observed.errors.push(message);
+        if (typeof options.errorAction === "function") return options.errorAction(items);
+        return undefined;
+      },
       showWarningMessage: async (message, ...items) => {
         observed.warnings.push(message);
         if (typeof options.migrate === "function") return options.migrate(items);
@@ -62,7 +66,7 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       },
     },
     commands: {
-      executeCommand: async () => {},
+      executeCommand: async (name) => { observed.executed.push(name); },
       registerCommand: (name, callback) => { observed.commands.set(name, callback); return { dispose() {} }; },
     },
     ProgressLocation: { SourceControl: 1, Notification: 15 },
@@ -143,7 +147,9 @@ test("manifest translations cover every referenced key and use matching key sets
   const en = require("../package.nls.json");
   const zh = require("../package.nls.zh-cn.json");
   const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
-  assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, "");
+  const { DEFAULT_SYSTEM_PROMPT_EN } = load();
+  assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
+  assert.equal(manifest.contributes.configuration.properties["aiCommit.apiKey"].markdownDeprecationMessage, undefined);
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   for (const key of keys) {
     assert.equal(typeof en[key], "string", key);
@@ -156,8 +162,9 @@ test("manifest translations cover every referenced key and use matching key sets
 
 test("generation sends the locale default or the unchanged custom prompt", async () => {
   const customPrompt = "Always output in French. Keep this prompt exactly as supplied.\n";
+  const enDefault = require("../package.json").contributes.configuration.properties["aiCommit.systemPrompt"].default;
   for (const language of ["en", "zh-cn", "zh-tw", "fr"]) {
-    for (const systemPrompt of [undefined, "", customPrompt]) {
+    for (const systemPrompt of [undefined, "", enDefault, customPrompt]) {
       let payload;
       await withServer((req, res) => {
         let body = "";
@@ -175,7 +182,7 @@ test("generation sends the locale default or the unchanged custom prompt", async
         assert.equal(target.inputBox.value, "feat: add locale support");
         assert.equal(payload.messages[0].role, "system");
         const prompt = payload.messages[0].content;
-        if (systemPrompt) {
+        if (systemPrompt === customPrompt) {
           assert.equal(prompt, customPrompt);
         } else if (language === "zh-cn") {
           assert.match(prompt, /使用中文/);
@@ -568,36 +575,45 @@ test("password commands store one global key and clear only secure storage", asy
   }
 });
 
-test("stored key takes precedence and migration clears only the confirmed source", async () => {
-  for (const mode of ["stored", "global", "workspace", "declined", "store-failed", "clear-failed"]) {
+test("plaintext settings key imports into secure storage with confirmation", async () => {
+  for (const mode of ["global", "workspace", "declined", "store-failed", "clear-failed", "stored-differs-accept", "stored-differs-decline", "stored-same"]) {
     const headers = [];
     await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
       const target = repo("app");
-      const config = { apiBaseUrl: baseUrl, apiKey: "legacy-secret" };
-      if (mode === "workspace") config.keyWorkspaceValue = "workspace-secret";
-      const options = {
-        secureKey: mode === "stored" ? "secure-secret" : undefined,
-        migrate: mode !== "declined",
+      const workspace = mode === "workspace";
+      const config = { apiBaseUrl: baseUrl, apiKey: workspace ? undefined : "legacy-secret" };
+      if (workspace) config.keyWorkspaceValue = "workspace-secret";
+      const stored = mode === "stored-same" ? "legacy-secret" : mode.startsWith("stored") ? "secure-secret" : undefined;
+      const accept = !mode.includes("decline");
+      const extension = load(config, [target], "diff", "en", {
+        secureKey: stored,
+        migrate: accept,
         storeError: mode === "store-failed" ? "legacy-secret" : undefined,
         updateError: mode === "clear-failed" ? "legacy-secret" : undefined,
-      };
-      const extension = load(config, [target], "diff", "en", options);
+      });
       await extension.generateCommitMessage(target);
       await extension.generateCommitMessage(target);
-      const expectedKey = mode === "stored" ? "secure-secret" : mode === "workspace" ? "workspace-secret" : "legacy-secret";
-      assert.deepEqual(headers, [`Bearer ${expectedKey}`, `Bearer ${expectedKey}`]);
-      assert.equal(extension.observed.warnings.length, mode === "stored" ? 0 : 1);
-      const shouldStore = !["stored", "declined", "store-failed"].includes(mode);
-      assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), mode === "stored" ? "secure-secret" : shouldStore ? expectedKey : undefined);
-      if (shouldStore) {
-        assert.deepEqual(extension.observed.updates, [{ key: "apiKey", value: undefined, target: mode === "workspace" ? 2 : 1 }]);
-      } else {
-        assert.equal(extension.observed.updates.length, 0);
+      const effectiveKey = workspace ? "workspace-secret"
+        : mode.startsWith("stored") && !accept ? "secure-secret"
+        : "legacy-secret";
+      assert.deepEqual(headers, [`Bearer ${effectiveKey}`, `Bearer ${effectiveKey}`], mode);
+      assert.equal(extension.observed.warnings.length, mode === "stored-same" ? 0 : 1, mode);
+      const storedNow = mode === "stored-differs-decline" ? "secure-secret"
+        : ["declined", "store-failed"].includes(mode) ? undefined
+        : effectiveKey;
+      assert.equal(extension.observed.secretValues.get("aiCommit.apiKey") ?? undefined, storedNow, mode);
+      const expectedUpdates = mode === "stored-same" ? 1
+        : accept && mode !== "store-failed" ? (mode === "clear-failed" ? 2 : 1)
+        : 0;
+      assert.equal(extension.observed.updates.length, expectedUpdates, mode);
+      for (const update of extension.observed.updates) {
+        assert.deepEqual([update.key, update.value], ["apiKey", undefined], mode);
+        assert.equal(update.target, workspace ? 2 : 1, mode);
       }
-      assert.equal(config.apiKey, mode === "global" ? undefined : "legacy-secret");
-      assert.equal(extension.observed.errors.length, ["store-failed", "clear-failed"].includes(mode) ? 1 : 0);
+      const expectedErrors = mode === "clear-failed" ? 2 : mode === "store-failed" ? 1 : 0;
+      assert.equal(extension.observed.errors.length, expectedErrors, mode);
       for (const message of [...extension.observed.errors, ...extension.observed.warnings, ...extension.observed.infos, ...extension.observed.logs]) {
-        assert.ok(!message.includes(expectedKey));
+        assert.ok(!message.includes("legacy-secret") && !message.includes("workspace-secret") && !message.includes("secure-secret"), `${mode}: ${message}`);
       }
     });
   }
@@ -713,5 +729,51 @@ test("oversized file lists report omission without exceeding the diff limit", as
     assert.match(diff, /files omitted/);
     assert.match(diff, /file-0\.ts/);
     assert.ok(!diff.includes("file-99.ts"));
+  });
+});
+
+
+test("401 and 403 responses offer an actionable Set API Key prompt", async () => {
+  for (const language of ["en", "zh-cn"]) {
+    for (const status of [401, 403, 500]) {
+      for (const chooseAction of [false, true]) {
+        await withServer((_req, res) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "Invalid Authentication" } }));
+        }, async (baseUrl) => {
+          const target = repo("app");
+          const actionable = status !== 500;
+          const extension = load({ apiBaseUrl: baseUrl, apiKey: "some-key" }, [target], "diff", language, {
+            migrate: true,
+            errorAction: chooseAction ? (items) => items[0] : undefined,
+          });
+          await extension.generateCommitMessage(target);
+          assert.equal(extension.observed.errors.length, 1);
+          assert.match(extension.observed.errors[0], new RegExp(String(status)));
+          if (language === "zh-cn" && actionable) assert.match(extension.observed.errors[0], /[一-龥]/);
+          assert.equal(extension.observed.executed.includes("ai-commit.setApiKey"), actionable && chooseAction);
+        });
+      }
+    }
+  }
+});
+
+
+test("key confirmation resolves before the progress notification starts", async () => {
+  await withServer((_req, res) => reply(res), async (baseUrl) => {
+    const target = repo("app");
+    let releasePrompt;
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "legacy-secret" }, [target], "diff", "en", {
+      migrate: () => new Promise((resolve) => { releasePrompt = () => resolve(undefined); }),
+    });
+    const work = extension.generateCommitMessage(target);
+    await new Promise((resolve) => setImmediate(resolve));
+    // The confirmation is still pending: no progress notification may exist yet.
+    assert.equal(extension.observed.progress.length, 0);
+    assert.equal(extension.observed.warnings.length, 1);
+    releasePrompt();
+    await work;
+    assert.equal(extension.observed.progress.length, 1);
+    assert.equal(target.inputBox.value, "fix: generated message");
   });
 });
