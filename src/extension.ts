@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
+import { relative } from "path";
 import { simpleGit } from "simple-git";
 
 // ─── Logger ─────────────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ async function getRepo(arg?: any): Promise<any> {
   if (arg?.rootUri) {
     const targetPath = arg.rootUri.fsPath;
     for (const repo of api.repositories) {
-      if (targetPath.startsWith(repo.rootUri.fsPath)) {
+      if (relative(repo.rootUri.fsPath, targetPath) === "") {
         return repo;
       }
     }
@@ -129,7 +130,10 @@ async function getRepo(arg?: any): Promise<any> {
 }
 
 async function getDiffStaged(rootPath: string): Promise<string> {
-  const git = simpleGit(rootPath);
+  const git = simpleGit({
+    baseDir: rootPath,
+    binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
+  });
   const diff = await git.diff(["--staged"]);
   return diff;
 }
@@ -189,6 +193,14 @@ function callLLM(
 
     const transport = parsedUrl.protocol === "https:" ? https : http;
     const req = transport.request(options, (res) => {
+      res.setEncoding("utf8");
+      const onResponseError = (err: Error) => {
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      };
+      res.on("error", onResponseError);
+      res.on("aborted", () => onResponseError(new Error("API response aborted")));
+      res.on("end", () => signal?.removeEventListener("abort", onAbort));
       if (
         res.statusCode === undefined ||
         res.statusCode < 200 ||
@@ -209,7 +221,6 @@ function callLLM(
       let body = "";
       res.on("data", (chunk) => (body += chunk));
       res.on("end", () => {
-        signal?.removeEventListener("abort", onAbort);
         try {
           const json = JSON.parse(body);
           if (json.error) {
@@ -285,7 +296,10 @@ async function generateCommitMessage(arg?: any) {
     // Distinguish "nothing at all" from "changes exist but none are staged".
     let hasChanges = false;
     try {
-      const status = await simpleGit(rootPath).status();
+      const status = await simpleGit({
+        baseDir: rootPath,
+        binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
+      }).status();
       hasChanges = status.files.length > 0;
     } catch {
       // ignore — fall back to the generic hint
@@ -314,22 +328,8 @@ async function generateCommitMessage(arg?: any) {
     return;
   }
 
-  // Only validate config once we have an actual diff to send.
+  // Only read config once we have an actual diff to send.
   const config = getConfig();
-  if (!config.apiKey) {
-    Logger.warn("No API key configured");
-    const action = await vscode.window.showErrorMessage(
-      t("AI Commit：未配置 API Key。", "AI Commit: No API key configured."),
-      t("打开设置", "Open Settings"),
-    );
-    if (action) {
-      vscode.commands.executeCommand(
-        "workbench.action.openSettings",
-        "aiCommit.apiKey",
-      );
-    }
-    return;
-  }
 
   await vscode.window.withProgress(
     {
