@@ -3,7 +3,7 @@ import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
 import { relative } from "path";
-import { simpleGit } from "simple-git";
+import { simpleGit, DiffResult } from "simple-git";
 
 // ─── Logger ─────────────────────────────────────────────────────────────────
 
@@ -131,17 +131,110 @@ class ConfigManager {
 
 function getConfig() {
   const cfg = ConfigManager.getInstance();
-  return {
-    apiBaseUrl: cfg
-      .get<string>("apiBaseUrl", "https://api.openai.com/v1")
-      .replace(/\/$/, ""),
-    apiKey: cfg.get<string>("apiKey", ""),
+  const config = {
+    apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1"),
     model: cfg.get<string>("model", "gpt-4o"),
     systemPrompt: cfg.get<string>("systemPrompt", ""),
     temperature: cfg.get<number>("temperature", 0.3),
     maxDiffChars: cfg.get<number>("maxDiffChars", 6000),
     timeoutMs: cfg.get<number>("timeoutMs", 30000),
   };
+  for (const key of ["maxDiffChars", "timeoutMs"] as const) {
+    const value = config[key];
+    if (!Number.isSafeInteger(value) || value <= 0 || (key === "timeoutMs" && value > 2147483647)) {
+      throw new Error(t(`aiCommit.${key} 必须为有效的正整数。`, `aiCommit.${key} must be a valid positive integer.`));
+    }
+  }
+  if (!Number.isFinite(config.temperature) || (config.temperature !== -1 && (config.temperature < 0 || config.temperature > 2))) {
+    throw new Error(t("aiCommit.temperature 必须为 -1 或 0–2。", "aiCommit.temperature must be -1 or between 0 and 2."));
+  }
+  getApiUrl(config.apiBaseUrl);
+  return config;
+}
+
+const API_KEY = "aiCommit.apiKey";
+let secrets: vscode.SecretStorage;
+let migrationPrompted = false;
+let migration: Promise<string> | undefined;
+
+async function setApiKey() {
+  const key = await vscode.window.showInputBox({
+    title: t("Simple AI Committer：设置 API Key", "Simple AI Committer: Set API Key"),
+    prompt: t("密钥将保存在 VS Code 安全存储中。", "The key will be saved in VS Code SecretStorage."),
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (!key?.trim()) return;
+  try {
+    await secrets.store(API_KEY, key.trim());
+    vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存。", "AI Commit: API key saved securely."));
+  } catch {
+    vscode.window.showErrorMessage(t("AI Commit：无法安全保存 API Key。", "AI Commit: Could not save the API key securely."));
+  }
+}
+
+async function clearApiKey() {
+  try {
+    await secrets.delete(API_KEY);
+    vscode.window.showInformationMessage(t("AI Commit：已清除安全存储中的密钥；已有旧设置仍会生效。", "AI Commit: Stored key cleared; any legacy settings still apply."));
+  } catch {
+    vscode.window.showErrorMessage(t("AI Commit：无法清除安全存储中的 API Key。", "AI Commit: Could not clear the stored API key."));
+  }
+}
+
+async function getApiKey(): Promise<string> {
+  let stored: string | undefined;
+  try {
+    stored = await secrets.get(API_KEY);
+  } catch {
+    throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
+  }
+  if (stored) return stored;
+  if (migration) return migration;
+  const config = vscode.workspace.getConfiguration("aiCommit");
+  const legacy = config.get<string>("apiKey", "");
+  if (!legacy || migrationPrompted) return legacy;
+  migrationPrompted = true;
+  migration = (async () => {
+    const migrate = t("迁移并清除", "Migrate and clear");
+    const choice = await vscode.window.showWarningMessage(
+      t("AI Commit：发现明文 API Key，是否迁移到安全存储并清除原设置？", "AI Commit: A plaintext API key was found. Migrate it to secure storage and clear the original setting?"),
+      migrate, t("暂不", "Not now"),
+    );
+    if (choice !== migrate) return legacy;
+    try {
+      await secrets.store(API_KEY, legacy);
+    } catch {
+      vscode.window.showErrorMessage(t("AI Commit：密钥迁移失败，原设置已保留。", "AI Commit: Key migration failed; the original setting was preserved."));
+      return legacy;
+    }
+    try {
+      const target = config.inspect<string>("apiKey")?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+      await config.update("apiKey", undefined, target);
+    } catch {
+      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但原明文设置未能清除。", "AI Commit: Key saved securely, but the original plaintext setting could not be cleared."));
+    }
+    return legacy;
+  })();
+  try {
+    return await migration;
+  } finally {
+    migration = undefined;
+  }
+}
+
+function getApiUrl(baseUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl.trim());
+    if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+  } catch {
+    throw new Error(t("请输入有效的 http(s) API 地址。", "Enter a valid http(s) API URL."));
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "") + "/chat/completions";
+  parsed.hash = "";
+  return parsed;
 }
 
 async function selectApiBaseUrl() {
@@ -168,8 +261,7 @@ async function selectApiBaseUrl() {
       const selected = picker.selectedItems[0];
       if (!selected) return;
       try {
-        const parsed = new URL(selected.url);
-        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+        getApiUrl(selected.url);
       } catch {
         vscode.window.showErrorMessage(t("请输入有效的 http(s) API 地址。", "Enter a valid http(s) API URL."));
         return;
@@ -221,15 +313,38 @@ async function getDiffStaged(rootPath: string): Promise<string> {
   return diff;
 }
 
-function truncateDiff(diff: string, maxChars: number): string {
+function truncateDiff(diff: string, maxChars: number, summary?: DiffResult): string {
   if (diff.length <= maxChars) return diff;
-  return (
-    diff.slice(0, maxChars) +
-    `\n\n... [diff truncated: ${diff.length} chars → ${maxChars}]`
-  );
+  const marker = `\n\n... [diff truncated: ${diff.length} chars]`;
+  if (marker.length >= maxChars) return diff.slice(0, maxChars);
+  const summaryBudget = Math.min(Math.floor(maxChars / 3), maxChars - marker.length);
+  let fileList = "";
+  if (summary?.files.length) {
+    const header = "Staged files:\n";
+    const omitted = (count: number) => count ? `[${count} files omitted]\n\n` : "\n";
+    if (header.length + omitted(summary.files.length).length <= summaryBudget) {
+      fileList = header;
+      let included = 0;
+      for (const file of summary.files) {
+        const stats = file.binary ? "binary" : `+${file.insertions} -${file.deletions}`;
+        const line = `${JSON.stringify(file.file)}: ${stats}\n`;
+        if (fileList.length + line.length + omitted(summary.files.length - included - 1).length > summaryBudget) break;
+        fileList += line;
+        included++;
+      }
+      fileList += omitted(summary.files.length - included);
+    }
+  }
+  return fileList + diff.slice(0, maxChars - fileList.length - marker.length) + marker;
 }
 
 // ─── LLM Call ────────────────────────────────────────────────────────────────
+
+function abortError(): Error {
+  const error = new Error("Cancelled by user");
+  error.name = "AbortError";
+  return error;
+}
 
 function callLLM(
   baseUrl: string,
@@ -242,6 +357,10 @@ function callLLM(
   signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     const payload = JSON.stringify({
       model,
       max_tokens: 2048,
@@ -260,13 +379,12 @@ function callLLM(
       ],
     });
 
-    const parsedUrl = new URL(`${baseUrl}/chat/completions`);
+    const parsedUrl = getApiUrl(baseUrl);
     const options: https.RequestOptions = {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
       path: parsedUrl.pathname + parsedUrl.search,
       method: "POST",
-      timeout: timeoutMs,
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
@@ -274,16 +392,33 @@ function callLLM(
       },
     };
 
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const redact = (text: string) => (apiKey ? text.split(apiKey).join("[redacted]") : text);
+    const finish = (error?: Error, message?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) {
+        req.destroy();
+        if (apiKey && error.message.includes(apiKey)) {
+          const redacted = new Error(redact(error.message));
+          redacted.name = error.name;
+          reject(redacted);
+        } else {
+          reject(error);
+        }
+      } else {
+        resolve(message!);
+      }
+    };
+    const onAbort = () => finish(abortError());
     const transport = parsedUrl.protocol === "https:" ? https : http;
     const req = transport.request(options, (res) => {
       res.setEncoding("utf8");
-      const onResponseError = (err: Error) => {
-        signal?.removeEventListener("abort", onAbort);
-        reject(err);
-      };
-      res.on("error", onResponseError);
-      res.on("aborted", () => onResponseError(new Error("API response aborted")));
-      res.on("end", () => signal?.removeEventListener("abort", onAbort));
+      res.on("error", (err) => finish(err));
+      res.on("aborted", () => finish(new Error("API response aborted")));
       if (
         res.statusCode === undefined ||
         res.statusCode < 200 ||
@@ -292,9 +427,9 @@ function callLLM(
         let errBody = "";
         res.on("data", (chunk) => (errBody += chunk));
         res.on("end", () => {
-          reject(
+          finish(
             new Error(
-              `API request failed (${res.statusCode}): ${errBody.slice(0, 300)}`,
+              `API request failed (${res.statusCode}): ${redact(errBody).slice(0, 300)}`,
             ),
           );
         });
@@ -307,42 +442,37 @@ function callLLM(
         try {
           const json = JSON.parse(body);
           if (json.error) {
-            reject(new Error(json.error.message || JSON.stringify(json.error)));
+            finish(new Error(redact(String(json.error.message || JSON.stringify(json.error)))));
             return;
           }
-          const choice = json.choices?.[0]?.message;
-          const message = (choice?.content ?? choice?.reasoning ?? "").trim();
+          const choice = json.choices?.[0];
+          if (choice?.finish_reason === "length") {
+            finish(new Error(t("API 输出被截断，请调整模型或提示词后重试。", "API output was truncated. Adjust the model or prompt and retry.")));
+            return;
+          }
+          const content = choice?.message?.content;
+          const message = typeof content === "string" ? content.trim() : "";
           if (!message) {
-            reject(new Error("Empty response from API. Raw: " + body));
+            finish(new Error(t("API 未返回有效的最终文本。", "Empty or invalid final text from API.")));
             return;
           }
-          resolve(message);
+          finish(undefined, message);
         } catch (e) {
-          reject(new Error("Failed to parse API response: " + body));
+          finish(new Error("Failed to parse API response"));
         }
       });
     });
 
-    const onAbort = () => {
-      req.destroy();
-      reject(new Error("Cancelled by user"));
-    };
-
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request timeout"));
-    });
-    req.on("error", (err) => {
-      signal?.removeEventListener("abort", onAbort);
-      reject(err);
-    });
-    signal?.addEventListener("abort", onAbort);
-    req.write(payload);
-    req.end();
+    req.on("error", (err) => finish(err));
+    timer = setTimeout(() => finish(new Error("Request timeout")), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    req.end(payload);
   });
 }
 
 // ─── Main Command ───────────────────────────────────────────────────────────
+
+const generatingRepos = new Set<string>();
 
 async function generateCommitMessage(arg?: any) {
   const workspaceRoot =
@@ -360,117 +490,154 @@ async function generateCommitMessage(arg?: any) {
     return;
   }
 
-  // Diff the staged changes before anything else, so the empty-diff path
-  // never touches config validation or the AI. Never stage anything
-  // ourselves — only what the user already staged is analyzed.
-  let rawDiff: string;
+  const repoKey = process.platform === "win32" ? rootPath.toLowerCase() : rootPath;
+  if (generatingRepos.has(repoKey)) {
+    vscode.window.showInformationMessage(t("AI Commit：该仓库正在生成提交信息。", "AI Commit: Already generating a message for this repository."));
+    return;
+  }
+  generatingRepos.add(repoKey);
+  const initialInput = repo?.inputBox.value;
   try {
-    rawDiff = await getDiffStaged(rootPath);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    Logger.error(`Git operation failed: ${msg}`, err);
-    vscode.window.showErrorMessage(
-      t(`AI Commit：Git 操作失败：${msg}`, `AI Commit: Git operation failed: ${msg}`),
-    );
-    return;
-  }
-
-  if (!rawDiff.trim()) {
-    // Distinguish "nothing at all" from "changes exist but none are staged".
-    let hasChanges = false;
+    // Diff the staged changes before anything else, so the empty-diff path
+    // never touches config validation or the AI. Never stage anything
+    // ourselves — only what the user already staged is analyzed.
+    let rawDiff: string;
     try {
-      const status = await simpleGit({
-        baseDir: rootPath,
-        binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
-      }).status();
-      hasChanges = status.files.length > 0;
-    } catch {
-      // ignore — fall back to the generic hint
+      rawDiff = await getDiffStaged(rootPath);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Logger.error(`Git operation failed: ${msg}`, err);
+      vscode.window.showErrorMessage(
+        t(`AI Commit：Git 操作失败：${msg}`, `AI Commit: Git operation failed: ${msg}`),
+      );
+      return;
     }
-    const hint = hasChanges
-      ? t(
-          "⚠ 没有已暂存的更改，请先暂存更改",
-          "⚠ No staged changes — stage your changes first",
-        )
-      : t("⚠ 没有可提交的更改", "⚠ No changes to commit");
-    const warning = hasChanges
-      ? t(
-          "AI Commit：未检测到已暂存的更改，已跳过 AI 生成。",
-          "AI Commit: No staged changes detected, AI call skipped.",
-        )
-      : t(
-          "AI Commit：未检测到任何更改，已跳过 AI 生成。",
-          "AI Commit: No changes detected, AI call skipped.",
-        );
-    if (repo) {
-      repo.inputBox.value = hint;
-      vscode.commands.executeCommand("workbench.view.scm");
-    }
-    Logger.warn(warning);
-    vscode.window.showWarningMessage(warning);
-    return;
-  }
 
-  // Only read config once we have an actual diff to send.
-  const config = getConfig();
-
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.SourceControl,
-      title: t(
-        "Simple AI Committer：正在生成提交信息…",
-        "Simple AI Committer: Generating commit message…",
-      ),
-      cancellable: true,
-    },
-    async (_progress, token) => {
-      const abortCtrl = new AbortController();
-      token.onCancellationRequested(() => {
-        Logger.info("Generation cancelled by user");
-        abortCtrl.abort();
-      });
+    if (!rawDiff.trim()) {
+      // Distinguish "nothing at all" from "changes exist but none are staged".
+      let hasChanges = false;
       try {
-        const diff = truncateDiff(rawDiff, config.maxDiffChars);
-
-        const message = await callLLM(
-          config.apiBaseUrl,
-          config.apiKey,
-          config.model,
-          config.systemPrompt,
-          config.temperature,
-          diff,
-          config.timeoutMs,
-          abortCtrl.signal,
-        );
-
-        if (repo) {
-          repo.inputBox.value = message;
-          // Focus the Source Control panel so the user sees it
-          vscode.commands.executeCommand("workbench.view.scm");
-        } else {
-          // Fallback: copy to clipboard
-          await vscode.env.clipboard.writeText(message);
-          vscode.window.showInformationMessage(
-            t(
-              "AI Commit：已复制到剪贴板（未找到 Git 仓库）。",
-              "AI Commit: Message copied to clipboard (SCM repo not found).",
-            ),
-          );
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        Logger.error(`Failed to generate commit message: ${msg}`, err);
-        vscode.window.showErrorMessage(
-          t(`AI Commit：${msg}`, `AI Commit: ${msg}`),
-        );
+        const status = await simpleGit({
+          baseDir: rootPath,
+          binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
+        }).status();
+        hasChanges = status.files.length > 0;
+      } catch {
+        // ignore — fall back to the generic hint
       }
-    },
-  );
+      const hint = hasChanges
+        ? t(
+            "⚠ 没有已暂存的更改，请先暂存更改",
+            "⚠ No staged changes — stage your changes first",
+          )
+        : t("⚠ 没有可提交的更改", "⚠ No changes to commit");
+      const warning = hasChanges
+        ? t(
+            "AI Commit：未检测到已暂存的更改，已跳过 AI 生成。",
+            "AI Commit: No staged changes detected, AI call skipped.",
+          )
+        : t(
+            "AI Commit：未检测到任何更改，已跳过 AI 生成。",
+            "AI Commit: No changes detected, AI call skipped.",
+          );
+      if (repo) {
+        if (!repo.inputBox.value.trim()) repo.inputBox.value = hint;
+        vscode.commands.executeCommand("workbench.view.scm");
+      }
+      Logger.warn(warning);
+      vscode.window.showWarningMessage(warning);
+      return;
+    }
+
+    // Only read config once we have an actual diff to send.
+    let config: ReturnType<typeof getConfig>;
+    try {
+      config = getConfig();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(t(`AI Commit：${msg}`, `AI Commit: ${msg}`));
+      return;
+    }
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: t(
+          "Simple AI Committer：正在生成提交信息…",
+          "Simple AI Committer: Generating commit message…",
+        ),
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        const abortCtrl = new AbortController();
+        const cancellation = token.onCancellationRequested(() => {
+          Logger.info("Generation cancelled by user");
+          abortCtrl.abort();
+        });
+        if (token.isCancellationRequested) abortCtrl.abort();
+        try {
+          if (abortCtrl.signal.aborted) return;
+          const summary = rawDiff.length > config.maxDiffChars
+            ? await simpleGit({
+                baseDir: rootPath,
+                binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
+              }).diffSummary(["--staged"])
+            : undefined;
+          if (abortCtrl.signal.aborted) return;
+          const diff = truncateDiff(rawDiff, config.maxDiffChars, summary);
+          const apiKey = await getApiKey();
+
+          const message = await callLLM(
+            config.apiBaseUrl,
+            apiKey,
+            config.model,
+            config.systemPrompt,
+            config.temperature,
+            diff,
+            config.timeoutMs,
+            abortCtrl.signal,
+          );
+
+          if (abortCtrl.signal.aborted) return;
+          if (repo) {
+            if (repo.inputBox.value !== initialInput) {
+              vscode.window.showInformationMessage(t("AI Commit：提交草稿已变更，生成结果未写入。", "AI Commit: The draft has changed; the generated message was not inserted."));
+              return;
+            }
+            repo.inputBox.value = message;
+            // Focus the Source Control panel so the user sees it
+            vscode.commands.executeCommand("workbench.view.scm");
+          } else {
+            // Fallback: copy to clipboard
+            await vscode.env.clipboard.writeText(message);
+            vscode.window.showInformationMessage(
+              t(
+                "AI Commit：已复制到剪贴板（未找到 Git 仓库）。",
+                "AI Commit: Message copied to clipboard (SCM repo not found).",
+              ),
+            );
+          }
+        } catch (err: unknown) {
+          if (err instanceof Error && err.name === "AbortError") return;
+          const msg = err instanceof Error ? err.message : String(err);
+          Logger.error(`Failed to generate commit message: ${msg}`, err);
+          vscode.window.showErrorMessage(
+            t(`AI Commit：${msg}`, `AI Commit: ${msg}`),
+          );
+        } finally {
+          cancellation.dispose();
+        }
+      },
+    );
+  } finally {
+    generatingRepos.delete(repoKey);
+  }
 }
 
 // ─── Activation ──────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
+  secrets = context.secrets;
   ConfigManager.getInstance(); // 初始化配置监听
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -478,6 +645,8 @@ export function activate(context: vscode.ExtensionContext) {
       (arg) => generateCommitMessage(arg),
     ),
     vscode.commands.registerCommand("ai-commit.selectApiBaseUrl", selectApiBaseUrl),
+    vscode.commands.registerCommand("ai-commit.setApiKey", setApiKey),
+    vscode.commands.registerCommand("ai-commit.clearApiKey", clearApiKey),
   );
   Logger.info("Extension activated");
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Prevent duplicate generation per repository and preserve drafts edited during generation or present when no changes are staged.
+- Provide cancellation through a notification, enforce a total API deadline, and release cancellation listeners and timers on completion.
+- Preserve API URL query parameters, validate numeric settings, and reject reasoning-only, empty, or truncated responses.
+- Add secure API key commands with confirmed legacy migration, safe failure handling, and redaction of keys in provider errors.
+- Include file statistics for long diffs within a strict combined character budget.
+- Commit the npm lockfile, pin VS Code 1.85 typings, and add Windows/Ubuntu CI using Node.js 22.
+
 ## 0.2.6
 
 - Rename the extension to **Simple AI Committer**, with Marketplace ID `u7pi.simple-ai-committer`.

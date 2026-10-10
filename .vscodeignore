@@ -1,4 +1,7 @@
 .vscode/**
+.github/**
+.tmp/**
+dist/**
 src/**
 scripts/**
 .gitignore

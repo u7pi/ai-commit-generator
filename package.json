@@ -40,6 +40,14 @@
       {
         "command": "ai-commit.selectApiBaseUrl",
         "title": "%command.selectApiBaseUrl.title%"
+      },
+      {
+        "command": "ai-commit.setApiKey",
+        "title": "%command.setApiKey.title%"
+      },
+      {
+        "command": "ai-commit.clearApiKey",
+        "title": "%command.clearApiKey.title%"
       }
     ],
     "menus": {
@@ -62,7 +70,8 @@
         "aiCommit.apiKey": {
           "type": "string",
           "default": "",
-          "description": "%config.apiKey.description%"
+          "description": "%config.apiKey.description%",
+          "markdownDeprecationMessage": "%config.apiKey.deprecation%"
         },
         "aiCommit.model": {
           "type": "string",
@@ -76,18 +85,21 @@
           "editPresentation": "multilineText"
         },
         "aiCommit.maxDiffChars": {
-          "type": "number",
+          "type": "integer",
+          "minimum": 1,
           "default": 6000,
           "description": "%config.maxDiffChars.description%"
         },
         "aiCommit.temperature": {
           "type": "number",
           "default": 0.3,
-          "minimum": -1,
+          "anyOf": [{ "enum": [-1] }, { "minimum": 0, "maximum": 2 }],
           "description": "%config.temperature.description%"
         },
         "aiCommit.timeoutMs": {
-          "type": "number",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
           "default": 30000,
           "description": "%config.timeoutMs.description%"
         },
@@ -107,7 +119,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "1.85.0",
     "typescript": "^5.3.0"
   },
   "dependencies": {

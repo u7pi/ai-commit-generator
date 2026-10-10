@@ -24,22 +24,25 @@ $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
 )
 $g.FillPath($brush, $path)
 
-# White 4-point sparkle (concave 8-gon, outer/outer radius alternating)
-$cx = 256.0
-$cy = 256.0
-$outer = 170.0
-$inner = 58.0
-$pts = @()
-for ($i = 0; $i -lt 8; $i++) {
-    $ang = [Math]::PI / 4 * $i - [Math]::PI / 2
-    $rad = $inner
-    if ($i % 2 -eq 0) { $rad = $outer }
-    $x = $cx + $rad * [Math]::Cos($ang)
-    $y = $cy - $rad * [Math]::Sin($ang)
-    $pts += (New-Object System.Drawing.PointF($x, $y))
-}
+# Two 4-point sparkles (concave 8-gon, outer/inner radius alternating).
+# Big star at upper-left, small star at lower-right with clear spacing.
 $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-$g.FillPolygon($white, $pts)
+
+function Add-Sparkle($cx, $cy, $outer, $inner) {
+    $pts = @()
+    for ($i = 0; $i -lt 8; $i++) {
+        $ang = [Math]::PI / 4 * $i - [Math]::PI / 2
+        $rad = $inner
+        if ($i % 2 -eq 0) { $rad = $outer }
+        $x = $cx + $rad * [Math]::Cos($ang)
+        $y = $cy - $rad * [Math]::Sin($ang)
+        $pts += (New-Object System.Drawing.PointF($x, $y))
+    }
+    $script:g.FillPolygon($script:white, $pts)
+}
+
+Add-Sparkle 210 210 96 33
+Add-Sparkle 326 326 72 25
 
 $out = Join-Path $PSScriptRoot "..\icon.png"
 $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)

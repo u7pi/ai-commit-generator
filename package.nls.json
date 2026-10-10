@@ -1,13 +1,16 @@
 {
   "command.generate.title": "Simple AI Committer: Generate Commit Message from Staged Changes",
   "command.selectApiBaseUrl.title": "Simple AI Committer: Select API Base URL (Custom Input Supported)",
+  "command.setApiKey.title": "Simple AI Committer: Set API Key",
+  "command.clearApiKey.title": "Simple AI Committer: Clear Stored API Key",
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "Base URL of the OpenAI-compatible API. Enter a URL directly, or run 'Simple AI Committer: Select API Base URL' to choose OpenAI, Kimi, DeepSeek, GLM, Ollama, or a custom URL.",
-  "config.apiKey.description": "Your API key for the configured endpoint",
+  "config.apiKey.description": "Legacy plaintext API key, used only when no key exists in SecretStorage",
+  "config.apiKey.deprecation": "Use 'Simple AI Committer: Set API Key' to store the key securely. Existing plaintext settings can be migrated with confirmation.",
   "config.model.description": "Model name to use (e.g. deepseek-chat, claude-sonnet-4-6, gpt-4o)",
   "config.systemPrompt.description": "Custom system prompt sent to the LLM. Leave empty to use the built-in prompt: Simplified Chinese commits for the zh-cn VS Code display language, English otherwise.",
-  "config.maxDiffChars.description": "Maximum diff characters to send to the API. Excess will be truncated.",
+  "config.maxDiffChars.description": "Maximum diff characters, including file summaries and truncation notices. Must be a positive integer.",
   "config.temperature.description": "AI generation temperature (0-2). Lower is more stable. Default: 0.3. Set to -1 to omit the parameter (for models with a fixed temperature).",
-  "config.timeoutMs.description": "API request timeout in milliseconds",
+  "config.timeoutMs.description": "Total API request deadline in milliseconds (1-2147483647), including connection and response reception",
   "config.gitPath.description": "Path to git executable. Change this if git is not in your PATH (e.g. C:\\Program Files\\Git\\bin\\git.exe)"
 }
