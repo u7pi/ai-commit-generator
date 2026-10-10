@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5
+
+- 新增“选择 API 地址”快捷选择框，提供 OpenAI、Kimi、DeepSeek、GLM、Ollama 常用地址，并支持直接输入自定义 URL
+- 设置页保留 API 地址输入框；快捷选择框在已有工作区配置时更新工作区，否则更新用户设置
+
+## 0.2.4
+
+- 修复：API 响应中断后请求持续等待的问题
+- 修复：多仓库根路径前缀相同时选错仓库的问题
+- 修复：中文响应跨数据块传输时可能出现乱码的问题
+- 修复：`aiCommit.gitPath` 设置未用于 diff 和 status 操作的问题
+- 修复：允许本地 Ollama 等无需认证的接口使用空 API Key
+
 ## 0.2.3
 
 - 修复：只接受固定 temperature 的模型（如 kimi-for-coding）返回 400 的问题；`aiCommit.temperature` 设为 -1 时请求将不携带该参数

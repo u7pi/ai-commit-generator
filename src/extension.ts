@@ -111,6 +111,56 @@ function getConfig() {
   };
 }
 
+async function selectApiBaseUrl() {
+  const presets = [
+    { label: "OpenAI", url: "https://api.openai.com/v1" },
+    { label: "Kimi", url: "https://api.moonshot.cn/v1" },
+    { label: "DeepSeek", url: "https://api.deepseek.com/v1" },
+    { label: "GLM", url: "https://open.bigmodel.cn/api/paas/v4" },
+    { label: "Ollama", url: "http://localhost:11434/v1" },
+  ].map((preset) => ({ ...preset, description: preset.url }));
+  const url = await new Promise<string | undefined>((resolve) => {
+    const picker = vscode.window.createQuickPick<vscode.QuickPickItem & { url: string }>();
+    picker.title = t("AI Commit：选择 API 地址", "AI Commit: Select API Base URL");
+    picker.placeholder = t("选择常用地址，或直接输入 http(s) URL", "Select a preset or enter an http(s) URL");
+    picker.matchOnDescription = true;
+    picker.items = presets;
+    picker.onDidChangeValue((value) => {
+      const input = value.trim();
+      picker.items = /^https?:\/\//i.test(input)
+        ? [{ label: t(`使用 ${input}`, `Use ${input}`), url: input, alwaysShow: true }, ...presets]
+        : presets;
+    });
+    picker.onDidAccept(() => {
+      const selected = picker.selectedItems[0];
+      if (!selected) return;
+      try {
+        const parsed = new URL(selected.url);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+      } catch {
+        vscode.window.showErrorMessage(t("请输入有效的 http(s) API 地址。", "Enter a valid http(s) API URL."));
+        return;
+      }
+      resolve(selected.url);
+      picker.hide();
+    });
+    picker.onDidHide(() => {
+      resolve(undefined);
+      picker.dispose();
+    });
+    picker.show();
+  });
+  if (url !== undefined) {
+    const config = vscode.workspace.getConfiguration("aiCommit");
+    const target = config.inspect<string>("apiBaseUrl")?.workspaceValue !== undefined
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    await config.update(
+      "apiBaseUrl", url, target,
+    );
+  }
+}
+
 // ─── Git Helpers ────────────────────────────────────────────────────────────
 
 async function getRepo(arg?: any): Promise<any> {
@@ -394,6 +444,7 @@ export function activate(context: vscode.ExtensionContext) {
       "ai-commit.generateCommitMessage",
       (arg) => generateCommitMessage(arg),
     ),
+    vscode.commands.registerCommand("ai-commit.selectApiBaseUrl", selectApiBaseUrl),
   );
   Logger.info("Extension activated");
 }

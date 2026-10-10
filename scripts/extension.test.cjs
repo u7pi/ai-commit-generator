@@ -4,22 +4,27 @@ const http = require("node:http");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { EventEmitter } = require("node:events");
 const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, callLLM, generateCommitMessage };",
+  source + "\nexports.test = { getRepo, getDiffStaged, callLLM, generateCommitMessage, selectApiBaseUrl };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
 function load(config = {}, repositories = [], diff = "+ staged change") {
-  const observed = { errors: [], gitOptions: [], statusCalls: 0 };
+  const observed = { errors: [], gitOptions: [], statusCalls: 0, updates: [] };
   const vscode = {
     env: { language: "en", clipboard: { writeText: async () => {} } },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: process.cwd() } }],
       onDidChangeConfiguration: () => ({ dispose() {} }),
-      getConfiguration: () => ({ get: (key, fallback) => config[key] ?? fallback }),
+      getConfiguration: () => ({
+        get: (key, fallback) => config[key] ?? fallback,
+        inspect: () => ({ workspaceValue: config.workspaceValue }),
+        update: async (key, value, target) => { observed.updates.push({ key, value, target }); },
+      }),
     },
     extensions: { getExtension: () => ({ exports: { getAPI: () => ({ repositories }) } }) },
     window: {
@@ -32,6 +37,7 @@ function load(config = {}, repositories = [], diff = "+ staged change") {
     },
     commands: { executeCommand: async () => {} },
     ProgressLocation: { SourceControl: 1 },
+    ConfigurationTarget: { Global: 1, Workspace: 2 },
   };
   const context = {
     exports: {}, Buffer, AbortController, process,
@@ -47,7 +53,22 @@ function load(config = {}, repositories = [], diff = "+ staged change") {
     } : require(name),
   };
   vm.runInNewContext(js, context);
-  return { ...context.exports.test, observed };
+  return { ...context.exports.test, observed, vscode };
+}
+
+function createPicker(extension) {
+  const events = new EventEmitter();
+  const picker = {
+    items: [], selectedItems: [], disposed: false,
+    onDidChangeValue: (callback) => events.on("change", callback),
+    onDidAccept: (callback) => events.on("accept", callback),
+    onDidHide: (callback) => events.on("hide", callback),
+    show() {},
+    hide: () => events.emit("hide"),
+    dispose: () => { picker.disposed = true; events.removeAllListeners(); },
+  };
+  extension.vscode.window.createQuickPick = () => picker;
+  return { picker, events };
 }
 
 function repo(root) {
@@ -156,4 +177,54 @@ test("a compatible API accepts an empty key without an Authorization header", as
     assert.equal(target.inputBox.value, "fix: local commit");
     assert.equal(extension.observed.errors.length, 0);
   });
+});
+
+test("API picker saves each provider URL to user settings", async () => {
+  const urls = {
+    OpenAI: "https://api.openai.com/v1",
+    Kimi: "https://api.moonshot.cn/v1",
+    DeepSeek: "https://api.deepseek.com/v1",
+    GLM: "https://open.bigmodel.cn/api/paas/v4",
+    Ollama: "http://localhost:11434/v1",
+  };
+  for (const [label, url] of Object.entries(urls)) {
+    const extension = load();
+    const { picker, events } = createPicker(extension);
+    const selection = extension.selectApiBaseUrl();
+    picker.selectedItems = [picker.items.find((item) => item.label === label)];
+    events.emit("accept");
+    await selection;
+    assert.deepEqual(extension.observed.updates, [{ key: "apiBaseUrl", value: url, target: 1 }]);
+    assert.equal(picker.disposed, true);
+  }
+});
+
+test("API picker accepts a typed custom URL and preserves workspace scope", async () => {
+  const extension = load({ workspaceValue: "https://existing.example/v1" });
+  const { picker, events } = createPicker(extension);
+  const selection = extension.selectApiBaseUrl();
+  events.emit("change", " https://custom.example/api/v1 ");
+  picker.selectedItems = [picker.items[0]];
+  events.emit("accept");
+  await selection;
+  assert.deepEqual(extension.observed.updates, [{
+    key: "apiBaseUrl", value: "https://custom.example/api/v1", target: 2,
+  }]);
+});
+
+test("API picker filtering, invalid input and cancellation leave settings unchanged", async () => {
+  const extension = load();
+  const { picker, events } = createPicker(extension);
+  const selection = extension.selectApiBaseUrl();
+  events.emit("change", "kimi");
+  assert.equal(picker.items.length, 5);
+  events.emit("change", "https://");
+  picker.selectedItems = [picker.items[0]];
+  events.emit("accept");
+  assert.equal(extension.observed.errors.length, 1);
+  assert.equal(picker.disposed, false);
+  picker.hide();
+  await selection;
+  assert.equal(extension.observed.updates.length, 0);
+  assert.equal(picker.disposed, true);
 });

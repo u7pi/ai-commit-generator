@@ -51,6 +51,8 @@ code --install-extension ai-commit-generator-*.vsix
 
 打开设置（`Ctrl + ,`）搜索 `aiCommit`：
 
+API 地址可在设置中直接输入，也可按 `Ctrl + Shift + P` 运行“AI Commit Generator：选择 API 地址”。选择框提供 OpenAI、Kimi、DeepSeek、GLM、Ollama 常用地址；直接输入完整的 `http://` 或 `https://` URL 后按回车即可保存。当前工作区已配置地址时更新工作区设置，否则保存到用户设置。
+
 | 设置项 Setting | 说明 Description | 示例 Example |
 | ----------------------- | --------------------------------------- | ---------------------------------- |
 | `aiCommit.apiBaseUrl`   | 兼容 OpenAI 的 API 接口地址             | `https://api.deepseek.com/v1`      |

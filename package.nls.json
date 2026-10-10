@@ -1,9 +1,10 @@
 {
   "command.generate.title": "AI Commit Generator：根据已暂存的更改生成提交信息",
+  "command.selectApiBaseUrl.title": "AI Commit Generator：选择 API 地址（支持自定义输入）",
   "config.title": "AI Commit",
-  "config.apiBaseUrl.description": "兼容 OpenAI 的 API 接口地址（如 https://api.deepseek.com/v1、https://api.anthropic.com/v1）",
+  "config.apiBaseUrl.description": "兼容 OpenAI 的 API 接口地址，可直接输入。运行命令“AI Commit Generator：选择 API 地址”可选择 OpenAI、Kimi、DeepSeek、GLM、Ollama，或输入自定义 URL。",
   "config.apiKey.description": "所配置接口的 API Key",
-  "config.model.description": "使用的模型名称（如 deepseek-chat、claude-opus-4-6、gpt-4o）",
+  "config.model.description": "使用的模型名称（如 deepseek-flash、kimi-for-coding、claude-sunnet-4-6、gpt-6-luna）",
   "config.systemPrompt.description": "发送给大模型的系统提示词，可自定义提交信息格式",
   "config.maxDiffChars.description": "发送给 API 的最大 diff 字符数，超出将自动截断",
   "config.temperature.description": "AI 生成温度（0-2），越低越稳定，建议 0.3；设为 -1 则不发送该参数（适用于固定温度的模型）",
