@@ -2,7 +2,7 @@
   "name": "ai-commit-generator",
   "displayName": "AI Commit Generator",
   "description": "基于暂存的代码差异（diff），使用任意兼容 OpenAI 的大模型自动生成 Git 提交信息并填入源代码管理输入框。Auto-generate Git commit messages from staged diffs using any OpenAI-compatible LLM.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "u7pi",
   "engines": {
     "vscode": "^1.85.0"
@@ -71,10 +71,20 @@
           "description": "%config.systemPrompt.description%",
           "editPresentation": "multilineText"
         },
-        "aiCommit.maxDiffLines": {
+        "aiCommit.maxDiffChars": {
           "type": "number",
-          "default": 500,
-          "description": "%config.maxDiffLines.description%"
+          "default": 6000,
+          "description": "%config.maxDiffChars.description%"
+        },
+        "aiCommit.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "description": "%config.temperature.description%"
+        },
+        "aiCommit.timeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "%config.timeoutMs.description%"
         },
         "aiCommit.gitPath": {
           "type": "string",
@@ -93,5 +103,8 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "simple-git": "^4.0.2"
   }
 }

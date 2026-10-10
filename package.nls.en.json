@@ -5,6 +5,8 @@
   "config.apiKey.description": "Your API key for the configured endpoint",
   "config.model.description": "Model name to use (e.g. deepseek-chat, claude-opus-4-6, gpt-4o)",
   "config.systemPrompt.description": "System prompt sent to the LLM. Customize this to match your commit message format.",
-  "config.maxDiffLines.description": "Truncate the diff to this many lines before sending (prevents token overflows)",
+  "config.maxDiffChars.description": "Maximum diff characters to send to the API. Excess will be truncated.",
+  "config.temperature.description": "AI generation temperature (0-2). Lower is more stable. Default: 0.3",
+  "config.timeoutMs.description": "API request timeout in milliseconds",
   "config.gitPath.description": "Path to git executable. Change this if git is not in your PATH (e.g. C:\\Program Files\\Git\\bin\\git.exe)"
 }
