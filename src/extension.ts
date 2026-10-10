@@ -139,7 +139,7 @@ function getConfig() {
     apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1"),
     model: cfg.get<string>("model", "gpt-4o"),
     systemPrompt: rawPrompt === DEFAULT_SYSTEM_PROMPT_EN ? "" : rawPrompt,
-    temperature: cfg.get<number>("temperature", 0.3),
+    temperature: cfg.get<number>("temperature", -1),
     maxDiffChars: cfg.get<number>("maxDiffChars", 6000),
     timeoutMs: cfg.get<number>("timeoutMs", 30000),
   };
@@ -157,10 +157,22 @@ function getConfig() {
 }
 
 const API_KEY = "aiCommit.apiKey";
+// Placeholder written back to the settings field once the key lives in
+// SecretStorage, so the Settings UI shows a masked key instead of an empty box.
+const MASKED_KEY = "*****";
 let secrets: vscode.SecretStorage;
 // Plaintext settings value we already prompted for; a changed value prompts again.
 let promptedValue: string | undefined;
 let migration: Promise<string> | undefined;
+
+function keySettingTarget(config: vscode.WorkspaceConfiguration): vscode.ConfigurationTarget {
+  return config.inspect<string>("apiKey")?.workspaceValue !== undefined
+    ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+}
+
+async function writeMaskedKey(config: vscode.WorkspaceConfiguration): Promise<void> {
+  await config.update("apiKey", MASKED_KEY, keySettingTarget(config));
+}
 
 async function setApiKey() {
   const key = await vscode.window.showInputBox({
@@ -172,25 +184,40 @@ async function setApiKey() {
   if (!key?.trim()) return;
   try {
     await secrets.store(API_KEY, key.trim());
-    vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存。", "AI Commit: API key saved securely."));
   } catch {
     vscode.window.showErrorMessage(t("AI Commit：无法安全保存 API Key。", "AI Commit: Could not save the API key securely."));
+    return;
   }
+  // Mirror the stored key in the settings field as a mask, so the Settings UI
+  // shows ***** instead of a stale plaintext value or an empty box.
+  try {
+    await writeMaskedKey(vscode.workspace.getConfiguration("aiCommit"));
+  } catch {
+    vscode.window.showErrorMessage(t("AI Commit：API Key 已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: API key saved securely, but the settings field could not be updated to the masked display."));
+    return;
+  }
+  vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存。", "AI Commit: API key saved securely."));
 }
 
 async function clearApiKey() {
   try {
     await secrets.delete(API_KEY);
-    vscode.window.showInformationMessage(t("AI Commit：已清除安全存储中的密钥；已有旧设置仍会生效。", "AI Commit: Stored key cleared; any legacy settings still apply."));
   } catch {
     vscode.window.showErrorMessage(t("AI Commit：无法清除安全存储中的 API Key。", "AI Commit: Could not clear the stored API key."));
+    return;
   }
-}
-
-async function clearLegacyKey(config: vscode.WorkspaceConfiguration): Promise<void> {
-  const target = config.inspect<string>("apiKey")?.workspaceValue !== undefined
-    ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-  await config.update("apiKey", undefined, target);
+  // Drop the ***** mirror so the settings field shows empty again; a real
+  // plaintext setting is left untouched and stays effective.
+  const config = vscode.workspace.getConfiguration("aiCommit");
+  if (config.get<string>("apiKey", "") === MASKED_KEY) {
+    try {
+      await config.update("apiKey", undefined, keySettingTarget(config));
+    } catch {
+      vscode.window.showErrorMessage(t("AI Commit：密钥已清除，但设置栏中的掩码未能移除。", "AI Commit: Key cleared, but the settings mask could not be removed."));
+      return;
+    }
+  }
+  vscode.window.showInformationMessage(t("AI Commit：已清除安全存储中的密钥及设置栏掩码；已有明文设置仍会生效。", "AI Commit: Cleared the stored key and the settings mask; any plaintext setting still applies."));
 }
 
 async function getApiKey(): Promise<string> {
@@ -201,14 +228,17 @@ async function getApiKey(): Promise<string> {
     throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
   }
   const config = vscode.workspace.getConfiguration("aiCommit");
-  const legacy = config.get<string>("apiKey", "");
+  // Trim like the Set API Key command does: keys copied with stray whitespace
+  // would otherwise be stored and sent verbatim, failing authentication.
+  const legacy = config.get<string>("apiKey", "").trim();
+  if (legacy === MASKED_KEY) return stored ?? "";
   if (!legacy) return stored ?? "";
   if (stored && legacy === stored) {
-    // The plaintext setting merely duplicates the stored key — clear it.
+    // The settings field merely duplicates the stored key — show the mask.
     try {
-      await clearLegacyKey(config);
+      await writeMaskedKey(config);
     } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但原明文设置未能清除。", "AI Commit: Key saved securely, but the original plaintext setting could not be cleared."));
+      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
     }
     return stored;
   }
@@ -216,10 +246,27 @@ async function getApiKey(): Promise<string> {
   if (promptedValue === legacy) return stored ?? legacy;
   promptedValue = legacy;
   migration = (async () => {
-    const migrate = t("迁移并清除", "Migrate and clear");
-    const message = stored
-      ? t("AI Commit：设置中的明文 API Key 与安全存储中的不同，是否更新安全存储并清除原设置？", "AI Commit: The settings API key differs from the stored one. Update secure storage and clear the original setting?")
-      : t("AI Commit：发现明文 API Key，是否迁移到安全存储并清除原设置？", "AI Commit: A plaintext API key was found. Migrate it to secure storage and clear the original setting?");
+    if (stored) {
+      // A plaintext value that differs from the stored key is the user's
+      // latest input: replace the stored key and re-mask the field. Prompting
+      // here used to keep the old key on "Not now", which failed generation
+      // with a confusing 401.
+      try {
+        await secrets.store(API_KEY, legacy);
+      } catch {
+        vscode.window.showErrorMessage(t("AI Commit：无法安全保存 API Key，仍使用安全存储中的原密钥。", "AI Commit: Could not save the API key securely; the stored key is still used."));
+        return stored ?? legacy;
+      }
+      try {
+        await writeMaskedKey(config);
+      } catch {
+        vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
+      }
+      vscode.window.showInformationMessage(t("AI Commit：检测到设置栏中的新 API Key，已更新安全存储。", "AI Commit: Detected the new settings API key and updated secure storage."));
+      return legacy;
+    }
+    const migrate = t("迁移并掩码", "Migrate and mask");
+    const message = t("AI Commit：发现明文 API Key，是否迁入安全存储并将此栏改为 ***** 显示？", "AI Commit: A plaintext API key was found. Move it to secure storage and show ***** in this field instead?");
     const choice = await vscode.window.showWarningMessage(message, migrate, t("暂不", "Not now"));
     if (choice !== migrate) return stored ?? legacy;
     try {
@@ -229,9 +276,9 @@ async function getApiKey(): Promise<string> {
       return stored ?? legacy;
     }
     try {
-      await clearLegacyKey(config);
+      await writeMaskedKey(config);
     } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但原明文设置未能清除。", "AI Commit: Key saved securely, but the original plaintext setting could not be cleared."));
+      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
     }
     return legacy;
   })();

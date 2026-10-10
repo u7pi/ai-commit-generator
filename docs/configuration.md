@@ -9,11 +9,11 @@ Open VS Code Settings and search for `aiCommit`. For connection examples, see [P
 | Setting | Description | Default |
 | --- | --- | --- |
 | `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.openai.com/v1` |
-| `aiCommit.apiKey` | Convenience input for the API key; on first use it is moved to SecretStorage and this field is cleared | Empty |
+| `aiCommit.apiKey` | Convenience input for the API key; on first use it is moved to SecretStorage and this field then shows `*****` (masked) | Empty |
 | `aiCommit.model` | Model ID supported by your endpoint | `gpt-4o` |
 | `aiCommit.systemPrompt` | Custom system prompt; until edited, the built-in prompt is used (Chinese for the `zh-cn` display language, English otherwise). The Settings default shows the built-in English prompt | Built-in prompt |
 | `aiCommit.maxDiffChars` | Positive integer budget for diff content, including summaries and truncation notices | `6000` |
-| `aiCommit.temperature` | `0–2`, or `-1` to omit it for models that require a fixed temperature | `0.3` |
+| `aiCommit.temperature` | `0–2`, or `-1` to omit the parameter (default). Most current models (Claude, GPT-5.x, Kimi) reject a custom temperature with a 400 error | `-1` |
 | `aiCommit.timeoutMs` | Total request deadline, including connection and response reception; integer `1–2147483647` milliseconds | `30000` |
 | `aiCommit.gitPath` | Git executable name or full path | `git` |
 
@@ -29,11 +29,11 @@ Base URLs may include query parameters. The extension appends `/chat/completions
 
 Enter the key in the `aiCommit.apiKey` setting or run **Simple AI Committer: Set API Key** to type it in a password input box. Cancelled or blank command input leaves the stored key unchanged. The extension keeps a single key in VS Code SecretStorage; it is shared across workspaces and API base URLs and is not synced across machines. Configure it separately on each machine and update it when switching providers.
 
-The first generation that needs a plaintext settings key offers **Migrate and clear** or **Not now**, once per window per value. Migration saves the key before clearing its original user or workspace setting. A storage failure leaves the original setting intact; a clearing failure reports that the plaintext setting remains. Other settings scopes are not removed. No staged changes means no migration prompt.
+The first generation that needs a plaintext settings key offers **Migrate and mask** or **Not now**, once per window per value. Migration saves the key, then replaces its original user or workspace setting with the `*****` mask. A storage failure leaves the original setting intact; a masking failure reports that the settings field could not be updated. Other settings scopes are not removed. No staged changes means no migration prompt.
 
-If the stored key and the settings key differ, the same one-time prompt offers to update secure storage with the settings key. A settings key identical to the stored key is cleared without prompting. Declining keeps the stored key (or falls back to the settings key when nothing is stored).
+A plaintext key in the settings field always represents your latest input: whenever it differs from the stored key, secure storage is replaced automatically and the field shows `*****` again, with an information message instead of a prompt. When nothing is stored yet, the first plaintext key still asks for a one-time **Migrate and mask** confirmation; declining uses the settings key for that run without storing it. A settings key identical to the stored key is masked without prompting.
 
-**Simple AI Committer: Clear Stored API Key** deletes only the SecretStorage value. The settings field, if present, becomes effective again. To send no Authorization header, clear the stored key and ensure the effective settings key is empty.
+**Simple AI Committer: Clear Stored API Key** deletes the SecretStorage value and removes the `*****` mask from the settings field; a plaintext settings key, if present, becomes effective again. To send no Authorization header, clear the stored key and ensure the effective settings key is empty.
 
 ## Long diffs and generation behavior
 

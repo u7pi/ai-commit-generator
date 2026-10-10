@@ -18,7 +18,7 @@ See [Commit format and language](./configuration.md#commit-format-and-language) 
 
 - Stage your changes first. Without a staged diff, the extension writes a hint only to an empty Source Control input and skips the API call.
 - Check the base URL, model, and API key. Stored keys take priority over legacy settings; update the key when switching providers. Provider errors redact the key before display and logging.
-- For models that reject a configurable temperature, set `aiCommit.temperature` to `-1`.
+- For models that reject a configurable temperature (most current models do), `aiCommit.temperature` defaults to `-1`, which omits the parameter. A `400` mentioning temperature means an explicit `0–2` value was set — remove it or set `-1`.
 - If the request times out, check the endpoint or increase `aiCommit.timeoutMs`. This limits total request time, even if the server keeps sending data.
 - If output is truncated or contains only reasoning, adjust the model or prompt and retry. Only final nonempty text is inserted.
 - If your draft changed during generation, the result is skipped to preserve your edits. Repeated clicks for the same repository do not start another request.

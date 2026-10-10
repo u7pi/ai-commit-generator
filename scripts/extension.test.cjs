@@ -562,61 +562,145 @@ test("invalid numeric configuration fails before sending an API request", async 
   assert.equal(requests, 0);
 });
 
-test("password commands store one global key and clear only secure storage", async () => {
+test("the default temperature is omitted and an explicit value is sent", async () => {
+  const payloads = [];
+  await withServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => { payloads.push(JSON.parse(body)); reply(res); });
+  }, async (baseUrl) => {
+    for (const [settings, expected] of [[{}, undefined], [{ temperature: 0.7 }, 0.7]]) {
+      const target = repo("app");
+      const extension = load({ apiBaseUrl: baseUrl, ...settings }, [target]);
+      await extension.generateCommitMessage(target);
+      assert.equal(payloads.at(-1).temperature, expected);
+    }
+  });
+});
+
+test("password commands store one key and mirror or clear the settings mask", async () => {
   for (const input of [undefined, "", "   ", " new-secret "]) {
     const extension = load({ apiKey: "legacy-secret" }, [], "diff", "en", { input, secureKey: "old-secret" });
     await extension.observed.commands.get("ai-commit.setApiKey")();
     assert.equal(extension.observed.inputOptions[0].password, true);
-    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), input?.trim() ? "new-secret" : "old-secret");
+    const trimmed = input?.trim();
+    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), trimmed ? "new-secret" : "old-secret");
+    // Storing via the command replaces any plaintext with the ***** mask; blank input leaves settings untouched.
+    assert.deepEqual(extension.observed.updates, trimmed ? [{ key: "apiKey", value: "*****", target: 1 }] : []);
     await extension.observed.commands.get("ai-commit.clearApiKey")();
     assert.equal(extension.observed.secretValues.has("aiCommit.apiKey"), false);
-    assert.equal(extension.observed.updates.length, 0);
+    // Clearing removes the mask mirror but keeps a real plaintext setting.
+    assert.deepEqual(extension.observed.updates, trimmed
+      ? [{ key: "apiKey", value: "*****", target: 1 }, { key: "apiKey", value: undefined, target: 1 }]
+      : []);
     assert.equal(extension.observed.warnings.length, 0);
   }
 });
 
-test("plaintext settings key imports into secure storage with confirmation", async () => {
-  for (const mode of ["global", "workspace", "declined", "store-failed", "clear-failed", "stored-differs-accept", "stored-differs-decline", "stored-same"]) {
+test("plaintext settings key imports into secure storage with confirmation and masks the field", async () => {
+  for (const mode of ["global", "workspace", "declined", "store-failed", "clear-failed", "stored-same", "stored-differs", "stored-differs-store-failed"]) {
     const headers = [];
     await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
       const target = repo("app");
       const workspace = mode === "workspace";
       const config = { apiBaseUrl: baseUrl, apiKey: workspace ? undefined : "legacy-secret" };
       if (workspace) config.keyWorkspaceValue = "workspace-secret";
-      const stored = mode === "stored-same" ? "legacy-secret" : mode.startsWith("stored") ? "secure-secret" : undefined;
-      const accept = !mode.includes("decline");
+      const hasStored = mode.startsWith("stored");
+      const stored = mode === "stored-same" ? "legacy-secret" : hasStored ? "secure-secret" : undefined;
+      const accept = !mode.includes("declined");
       const extension = load(config, [target], "diff", "en", {
         secureKey: stored,
         migrate: accept,
-        storeError: mode === "store-failed" ? "legacy-secret" : undefined,
+        storeError: mode.endsWith("store-failed") ? "legacy-secret" : undefined,
         updateError: mode === "clear-failed" ? "legacy-secret" : undefined,
       });
       await extension.generateCommitMessage(target);
       await extension.generateCommitMessage(target);
+      const adoptFailed = mode === "stored-differs-store-failed";
       const effectiveKey = workspace ? "workspace-secret"
-        : mode.startsWith("stored") && !accept ? "secure-secret"
+        : hasStored && (!accept || adoptFailed) ? "secure-secret"
         : "legacy-secret";
       assert.deepEqual(headers, [`Bearer ${effectiveKey}`, `Bearer ${effectiveKey}`], mode);
-      assert.equal(extension.observed.warnings.length, mode === "stored-same" ? 0 : 1, mode);
-      const storedNow = mode === "stored-differs-decline" ? "secure-secret"
-        : ["declined", "store-failed"].includes(mode) ? undefined
+      // Only the initial import into empty secure storage prompts; a differing
+      // plaintext key with a stored key is adopted automatically.
+      assert.equal(extension.observed.warnings.length, hasStored ? 0 : 1, mode);
+      const storedNow = ["declined", "store-failed"].includes(mode) ? undefined
+        : adoptFailed ? "secure-secret"
         : effectiveKey;
       assert.equal(extension.observed.secretValues.get("aiCommit.apiKey") ?? undefined, storedNow, mode);
-      const expectedUpdates = mode === "stored-same" ? 1
-        : accept && mode !== "store-failed" ? (mode === "clear-failed" ? 2 : 1)
-        : 0;
+      const expectedUpdates = ["declined", "store-failed", "stored-differs-store-failed"].includes(mode) ? 0
+        : mode === "clear-failed" ? 2
+        : 1;
       assert.equal(extension.observed.updates.length, expectedUpdates, mode);
       for (const update of extension.observed.updates) {
-        assert.deepEqual([update.key, update.value], ["apiKey", undefined], mode);
+        assert.deepEqual([update.key, update.value], ["apiKey", "*****"], mode);
         assert.equal(update.target, workspace ? 2 : 1, mode);
       }
-      const expectedErrors = mode === "clear-failed" ? 2 : mode === "store-failed" ? 1 : 0;
+      const expectedErrors = mode === "clear-failed" ? 2 : mode.endsWith("store-failed") ? 1 : 0;
       assert.equal(extension.observed.errors.length, expectedErrors, mode);
       for (const message of [...extension.observed.errors, ...extension.observed.warnings, ...extension.observed.infos, ...extension.observed.logs]) {
         assert.ok(!message.includes("legacy-secret") && !message.includes("workspace-secret") && !message.includes("secure-secret"), `${mode}: ${message}`);
       }
     });
   }
+});
+
+test("a masked settings field reuses the stored key without prompting", async () => {
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    const target = repo("app");
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****" }, [target], "diff", "en", { secureKey: "secure-secret" });
+    await extension.generateCommitMessage(target);
+    assert.deepEqual(headers, ["Bearer secure-secret"]);
+    assert.equal(target.inputBox.value, "fix: generated message");
+    assert.equal(extension.observed.warnings.length, 0);
+    assert.equal(extension.observed.updates.length, 0);
+    assert.equal(extension.observed.secretOps.filter((op) => op === "store").length, 0);
+  });
+});
+
+test("a masked settings field without a stored key sends no Authorization header", async () => {
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    const target = repo("app");
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****" }, [target]);
+    await extension.generateCommitMessage(target);
+    assert.deepEqual(headers, [undefined]);
+    assert.equal(target.inputBox.value, "fix: generated message");
+    assert.equal(extension.observed.warnings.length, 0);
+    assert.equal(extension.observed.updates.length, 0);
+  });
+});
+
+test("a whitespace-padded plaintext key is trimmed before storage and use", async () => {
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    const target = repo("app");
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "  padded-secret \n" }, [target], "diff", "en", { migrate: true });
+    await extension.generateCommitMessage(target);
+    assert.deepEqual(headers, ["Bearer padded-secret"]);
+    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), "padded-secret");
+  });
+});
+
+test("overwriting the mask with a new key replaces the stored key without prompting", async () => {
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    const target = repo("app");
+    const settings = { apiBaseUrl: baseUrl, apiKey: "*****" };
+    const extension = load(settings, [target], "diff", "en", { secureKey: "old-secret" });
+    await extension.generateCommitMessage(target);
+    assert.deepEqual(headers, ["Bearer old-secret"]);
+    // The user edits the settings field, replacing the ***** mirror.
+    settings.apiKey = "edited-secret";
+    await extension.generateCommitMessage(target);
+    assert.deepEqual(headers, ["Bearer old-secret", "Bearer edited-secret"]);
+    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), "edited-secret");
+    assert.equal(extension.observed.warnings.length, 0);
+    assert.equal(settings.apiKey, "*****");
+    assert.match(extension.observed.infos.at(-1), /new settings API key/);
+  });
 });
 
 test("empty staged changes never read secrets or offer migration", async () => {
