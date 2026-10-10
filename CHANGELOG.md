@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Prevent duplicate generation per repository and preserve drafts edited during generation or present when no changes are staged.
 - Provide cancellation through a notification, enforce a total API deadline, and release cancellation listeners and timers on completion.

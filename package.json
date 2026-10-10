@@ -2,7 +2,7 @@
   "name": "simple-ai-committer",
   "displayName": "Simple AI Committer",
   "description": "A simple, practical AI commit message generator. Turn staged Git diffs into commit messages using any OpenAI-compatible LLM.",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "publisher": "u7pi",
   "engines": {
     "vscode": "^1.85.0"
