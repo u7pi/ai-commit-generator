@@ -6,7 +6,7 @@
   "config.model.description": "使用的模型名称（如 deepseek-chat、claude-opus-4-6、gpt-4o）",
   "config.systemPrompt.description": "发送给大模型的系统提示词，可自定义提交信息格式",
   "config.maxDiffChars.description": "发送给 API 的最大 diff 字符数，超出将自动截断",
-  "config.temperature.description": "AI 生成温度（0-2），越低越稳定，建议 0.3",
+  "config.temperature.description": "AI 生成温度（0-2），越低越稳定，建议 0.3；设为 -1 则不发送该参数（适用于固定温度的模型）",
   "config.timeoutMs.description": "API 请求超时时间（毫秒）",
   "config.gitPath.description": "git 可执行文件路径。若 git 不在 PATH 中请修改（如 C:\\Program Files\\Git\\bin\\git.exe）"
 }

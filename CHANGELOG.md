@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3
+
+- 修复：只接受固定 temperature 的模型（如 kimi-for-coding）返回 400 的问题；`aiCommit.temperature` 设为 -1 时请求将不携带该参数
+
+## 0.2.2
+
+- 代码重构：用 simple-git 替代 child_process 执行 Git 操作，多仓库工作区下从对应仓库的 SCM 视图触发时使用该仓库
+- 新增配置：`maxDiffChars`（按字符截断 diff）、`temperature`（采样温度）、`timeoutMs`（请求超时）；移除 `maxDiffLines`
+- 生成进度条支持取消，取消会中止 API 请求
+- 未配置自定义提示词时使用内置的 Conventional Commits 中文指南作为系统提示词
+- 增加 Logger 与配置缓存（配置变更自动失效）
+
 ## 0.2.1
 
 - 仅分析已暂存的更改，不再自动执行 `git add`，提交范围完全由用户控制

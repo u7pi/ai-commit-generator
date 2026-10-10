@@ -158,7 +158,9 @@ function callLLM(
     const payload = JSON.stringify({
       model,
       max_tokens: 2048,
-      temperature,
+      // temperature < 0 means "auto": omit the field entirely for models that
+      // only accept a fixed sampling temperature.
+      ...(temperature >= 0 ? { temperature } : {}),
       messages: [
         {
           role: "system",
