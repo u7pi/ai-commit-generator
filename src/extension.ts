@@ -137,7 +137,7 @@ function getConfig() {
   const rawPrompt = cfg.get<string>("systemPrompt", "");
   const config = {
     apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1"),
-    model: cfg.get<string>("model", "gpt-4o"),
+    model: cfg.get<string>("model", "deepseek-flash"),
     systemPrompt: rawPrompt === DEFAULT_SYSTEM_PROMPT_EN ? "" : rawPrompt,
     temperature: cfg.get<number>("temperature", -1),
     maxDiffChars: cfg.get<number>("maxDiffChars", 6000),

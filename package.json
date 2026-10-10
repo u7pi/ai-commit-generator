@@ -74,7 +74,7 @@
         },
         "aiCommit.model": {
           "type": "string",
-          "default": "gpt-4o",
+          "default": "deepseek-flash",
           "description": "%config.model.description%"
         },
         "aiCommit.systemPrompt": {

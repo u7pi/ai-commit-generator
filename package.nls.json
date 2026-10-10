@@ -6,7 +6,7 @@
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "Base URL of the OpenAI-compatible API. Enter a URL directly, or run 'Simple AI Committer: Select API Base URL' to choose OpenAI, Kimi, DeepSeek, GLM, Ollama, or a custom URL.",
   "config.apiKey.description": "API key for the endpoint. You can enter it here; on first use the extension moves it to VS Code SecretStorage and this field then shows ***** instead of the plaintext. Equivalent to running 'Simple AI Committer: Set API Key'.",
-  "config.model.description": "Model name to use (e.g. deepseek-chat, claude-sonnet-4-6, gpt-4o)",
+  "config.model.description": "Model name to use (e.g. deepseek-flash, kimi-for-coding, gpt-6-luna)",
   "config.systemPrompt.description": "Custom system prompt sent to the LLM. The value shown above is the built-in English default; for the zh-cn display language a Chinese prompt is used until you change it.",
   "config.maxDiffChars.description": "Maximum diff characters, including file summaries and truncation notices. Must be a positive integer.",
   "config.temperature.description": "AI generation temperature (0-2); lower is more stable on models that still accept it. Default: -1 (omit the parameter), required by fixed-temperature models such as Claude, GPT-5.x and Kimi. Set 0-2 explicitly only for models that accept it.",

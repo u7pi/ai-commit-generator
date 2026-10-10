@@ -5,6 +5,7 @@
 - Once the API key lives in SecretStorage, the `aiCommit.apiKey` settings field shows `*****` instead of being cleared, so the Settings UI always reflects that a key is stored. Keys saved through migration and through **Set API Key** both write the mask; **Clear Stored API Key** also removes it.
 - Default `aiCommit.temperature` to `-1` (omit the parameter entirely): most current models (Claude, GPT-5.x, Kimi) reject a custom temperature with a 400 error, while omitting it is always accepted. Set `0–2` explicitly only for models that still honor it.
 - A plaintext key in the `aiCommit.apiKey` settings field is always treated as the latest intent: when it differs from the stored key, secure storage is replaced automatically and the field shows `*****` again — no confirmation, so "Not now" can no longer leave generation failing on the old key with a 401. Only the first import into empty secure storage keeps the one-time prompt; declining there uses the settings key for that run without persisting it.
+- Change the default `aiCommit.model` to `deepseek-flash` and refresh the documented model examples (`deepseek-flash`, `kimi-for-coding`, `gpt-6-luna`).
 
 ## 0.3.1
 

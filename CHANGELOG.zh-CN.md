@@ -5,6 +5,7 @@
 - API Key 存入 VS Code 安全存储后，设置栏 `aiCommit.apiKey` 改为显示 ***** 掩码，不再清空，设置页可直观看到已有密钥。经迁移和“设置 API Key”命令存入的密钥都会回填掩码；“清除已存储的 API Key”会同时移除掩码。
 - `aiCommit.temperature` 默认值改为 `-1`（请求不携带温度参数）：当前主流模型（Claude、GPT-5.x、Kimi）大多拒绝自定义温度并返回 400，而省略参数总是合法；仅在仍接受该参数的模型上按需设 `0–2`。
 - 设置栏 `aiCommit.apiKey` 中的明文 Key 一律视为最新输入：与安全存储中的值不同时自动覆盖并恢复 ***** 掩码显示，不再弹确认，避免「暂不」后仍用旧密钥导致 401；仅首次向空的安全存储迁入明文 Key 保留一次确认，「暂不」则本次直接使用该 Key 但不存储。
+- `aiCommit.model` 默认值改为 `deepseek-flash`，文档中的模型示例同步刷新为 `deepseek-flash`、`kimi-for-coding`、`gpt-6-luna`。
 
 ## 0.3.1
 

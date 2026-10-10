@@ -6,7 +6,7 @@
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "兼容 OpenAI 的 API 接口地址，可直接输入。运行命令“Simple AI Committer：选择 API 地址”可选择 OpenAI、Kimi、DeepSeek、GLM、Ollama，或输入自定义 URL。",
   "config.apiKey.description": "调用接口使用的 API Key，可直接在此输入；首次使用时扩展会将其迁入 VS Code 安全存储，此栏随后改为 ***** 掩码显示（不再显示明文）。效果等同于运行“Simple AI Committer：设置 API Key”。",
-  "config.model.description": "使用的模型名称（如 deepseek-chat、claude-sonnet-4-6、gpt-4o）",
+  "config.model.description": "使用的模型名称（如 deepseek-flash、kimi-for-coding、gpt-6-luna）",
   "config.systemPrompt.description": "发送给大模型的自定义系统提示词。上方显示的是内置英文默认提示词；VS Code 显示语言为简体中文（zh-cn）时，在你修改前实际使用中文提示词。",
   "config.maxDiffChars.description": "diff 的最大字符数，包含文件摘要和截断提示，必须为正整数",
   "config.temperature.description": "AI 生成温度（0-2），在仍接受该参数的模型上越低越稳定；默认 -1 即不发送该参数（Claude、GPT-5.x、Kimi 等固定温度模型必须省略，否则报 400），仅在模型接受时设 0-2",

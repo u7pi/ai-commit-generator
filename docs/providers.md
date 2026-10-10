@@ -9,7 +9,7 @@ Use an endpoint that supports the OpenAI-compatible `/chat/completions` request 
 ```json
 {
   "aiCommit.apiBaseUrl": "https://api.openai.com/v1",
-  "aiCommit.model": "gpt-4o"
+  "aiCommit.model": "gpt-6-luna"
 }
 ```
 
@@ -18,7 +18,7 @@ Use an endpoint that supports the OpenAI-compatible `/chat/completions` request 
 ```json
 {
   "aiCommit.apiBaseUrl": "https://api.deepseek.com/v1",
-  "aiCommit.model": "deepseek-chat"
+  "aiCommit.model": "deepseek-flash"
 }
 ```
 

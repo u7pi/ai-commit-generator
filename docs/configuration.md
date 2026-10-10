@@ -10,7 +10,7 @@ Open VS Code Settings and search for `aiCommit`. For connection examples, see [P
 | --- | --- | --- |
 | `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.openai.com/v1` |
 | `aiCommit.apiKey` | Convenience input for the API key; on first use it is moved to SecretStorage and this field then shows `*****` (masked) | Empty |
-| `aiCommit.model` | Model ID supported by your endpoint | `gpt-4o` |
+| `aiCommit.model` | Model ID supported by your endpoint | `deepseek-flash` |
 | `aiCommit.systemPrompt` | Custom system prompt; until edited, the built-in prompt is used (Chinese for the `zh-cn` display language, English otherwise). The Settings default shows the built-in English prompt | Built-in prompt |
 | `aiCommit.maxDiffChars` | Positive integer budget for diff content, including summaries and truncation notices | `6000` |
 | `aiCommit.temperature` | `0–2`, or `-1` to omit the parameter (default). Most current models (Claude, GPT-5.x, Kimi) reject a custom temperature with a 400 error | `-1` |
