@@ -13,10 +13,10 @@ const js = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
-function load(config = {}, repositories = [], diff = "+ staged change") {
+function load(config = {}, repositories = [], diff = "+ staged change", language = "en") {
   const observed = { errors: [], gitOptions: [], statusCalls: 0, updates: [] };
   const vscode = {
-    env: { language: "en", clipboard: { writeText: async () => {} } },
+    env: { language, clipboard: { writeText: async () => {} } },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: process.cwd() } }],
       onDidChangeConfiguration: () => ({ dispose() {} }),
@@ -89,6 +89,75 @@ async function withServer(handler, run) {
 function request(extension, baseUrl, signal) {
   return extension.callLLM(baseUrl, "", "test", "", 0.3, "diff", 100, signal);
 }
+
+test("manifest translations cover every referenced key and use matching key sets", () => {
+  const manifest = require("../package.json");
+  const en = require("../package.nls.json");
+  const zh = require("../package.nls.zh-cn.json");
+  const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
+  assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, "");
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
+  for (const key of keys) {
+    assert.equal(typeof en[key], "string", key);
+    assert.ok(en[key].trim(), key);
+    assert.equal(typeof zh[key], "string", key);
+    assert.ok(zh[key].trim(), key);
+  }
+  for (const text of Object.values(en)) assert.doesNotMatch(text, /[\u4e00-\u9fff]/);
+});
+
+test("generation sends the locale default or the unchanged custom prompt", async () => {
+  const customPrompt = "Always output in French. Keep this prompt exactly as supplied.\n";
+  for (const language of ["en", "zh-cn", "zh-tw", "fr"]) {
+    for (const systemPrompt of [undefined, "", customPrompt]) {
+      let payload;
+      await withServer((req, res) => {
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", () => {
+          payload = JSON.parse(body);
+          res.end(JSON.stringify({ choices: [{ message: { content: "feat: add locale support" } }] }));
+        });
+      }, async (baseUrl) => {
+        const target = repo("app");
+        const extension = load({ apiBaseUrl: baseUrl, systemPrompt }, [target], "+ staged change", language);
+        await extension.generateCommitMessage(target);
+        assert.equal(extension.observed.errors.length, 0);
+        assert.equal(target.inputBox.value, "feat: add locale support");
+        assert.equal(payload.messages[0].role, "system");
+        const prompt = payload.messages[0].content;
+        if (systemPrompt) {
+          assert.equal(prompt, customPrompt);
+        } else if (language === "zh-cn") {
+          assert.match(prompt, /使用中文/);
+        } else {
+          assert.doesNotMatch(prompt, /[\u4e00-\u9fff]/);
+          assert.match(prompt, /Write the subject and body in English/);
+        }
+      });
+    }
+  }
+});
+
+test("picker and empty-stage hints use Simplified Chinese only for zh-cn", async () => {
+  for (const language of ["en", "zh-cn", "zh-tw", "fr"]) {
+    const target = repo("app");
+    const extension = load({}, [target], "", language);
+    await extension.generateCommitMessage(target);
+    const { picker, events } = createPicker(extension);
+    const selection = extension.selectApiBaseUrl();
+    assert.equal(picker.title, language === "zh-cn" ? "AI Commit：选择 API 地址" : "AI Commit: Select API Base URL");
+    assert.equal(picker.placeholder, language === "zh-cn" ? "选择常用地址，或直接输入 http(s) URL" : "Select a preset or enter an http(s) URL");
+    assert.equal(target.inputBox.value, language === "zh-cn" ? "⚠ 没有已暂存的更改，请先暂存更改" : "⚠ No staged changes — stage your changes first");
+    events.emit("change", "https://");
+    picker.selectedItems = [picker.items[0]];
+    events.emit("accept");
+    assert.equal(extension.observed.errors[0], language === "zh-cn" ? "请输入有效的 http(s) API 地址。" : "Enter a valid http(s) API URL.");
+    picker.hide();
+    await selection;
+  }
+});
 
 test("SCM selects the exact normalized root for sibling and nested repositories", async () => {
   const parent = repo("app");

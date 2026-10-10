@@ -1,8 +1,8 @@
 {
   "name": "ai-commit-generator",
   "displayName": "AI Commit Generator",
-  "description": "基于暂存的代码差异（diff），使用任意兼容 OpenAI 的大模型自动生成 Git 提交信息并填入源代码管理输入框。Auto-generate Git commit messages from staged diffs using any OpenAI-compatible LLM.",
-  "version": "0.2.5",
+  "description": "Generate Git commit messages from staged diffs using any OpenAI-compatible LLM and insert them into the Source Control input box.",
+  "version": "0.2.6",
   "publisher": "u7pi",
   "engines": {
     "vscode": "^1.85.0"
@@ -71,7 +71,7 @@
         },
         "aiCommit.systemPrompt": {
           "type": "string",
-          "default": "你是一名 Git 提交信息生成器。根据给定的 git diff，生成符合 Conventional Commits 规范的提交信息。\n\n格式：\n<type>(<scope>): <简短摘要>\n\n- 变更点 1\n- 变更点 2\n\n要求：\n- type 只允许：feat, fix, docs, style, refactor, perf, test, build, chore\n- scope 从变更的文件路径或模块名推断（如 nowandtodo、readme），全部小写；没有明确模块时省略 scope 和括号\n- 摘要不超过 50 个字符，结尾不加句号；英文摘要用祈使句（\"add\" 而非 \"added\"）\n- 正文用无序列表逐项描述变更：每条以 \"- \" 开头、只写一个变更点，并保留关键信息（任务编号、日期、数值、文件名等）；长条目可换行，续行缩进 2 个空格\n- 输出语言与 diff 的主要语言保持一致；无法判断时默认用中文\n- 变更简单时可只输出标题行，不输出正文\n- 只输出提交信息本身，不要输出任何解释、引号或代码块标记",
+          "default": "",
           "description": "%config.systemPrompt.description%",
           "editPresentation": "multilineText"
         },

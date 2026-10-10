@@ -1,153 +1,195 @@
 # AI Commit Generator
 
-使用任意兼容 OpenAI 的大模型，读取**已暂存**的代码差异（diff），自动生成 Git 提交信息并填入源代码管理输入框。
+Generate Git commit messages from **staged changes** using an OpenAI-compatible LLM, then insert them directly into the VS Code Source Control input box.
 
-A VSCode extension that reads your staged diff and auto-generates a commit message using any OpenAI-compatible LLM — filling it directly into the Source Control input box.
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=u7pi.ai-commit-generator) · [GitHub](https://github.com/u7pi/ai-commit-generator) · [简体中文快速说明](#简体中文快速说明)
 
-🔗 **Marketplace:** https://marketplace.visualstudio.com/items?itemName=u7pi.ai-commit-generator
-🐙 **GitHub:** https://github.com/u7pi/ai-commit-generator
-🍴 Forked from [humaid24/ai-commit-generator](https://github.com/humaid24/ai-commit-generator)（MIT）
+Forked from [humaid24/ai-commit-generator](https://github.com/humaid24/ai-commit-generator) under the MIT license.
 
----
+## Features
 
-## ✨ 功能 / Features
+- Generate Conventional Commits with the wand button in the Source Control title bar.
+- Analyze only the changes you stage yourself. The extension never runs `git add` or commits for you.
+- Skip the AI request when no changes are staged, with a hint explaining whether there are unstaged changes.
+- Use English interface text and built-in prompts by default. With the Simplified Chinese (`zh-cn`) VS Code display language, use Chinese text and prompts.
+- Customize `aiCommit.systemPrompt` to match your team's commit format and preferred output language.
+- Connect to an OpenAI-compatible Chat Completions endpoint, including OpenAI, DeepSeek, Kimi, GLM, or local Ollama.
+- Limit the diff by character count and cancel generation to abort the API request.
+- Generate for the selected repository when using its Source Control title-bar command in a workspace with multiple repositories.
 
-- **一键生成**：点击源代码管理面板标题栏的 ✨ 按钮，自动生成符合 Conventional Commits 规范的提交信息
-- **仅分析已暂存内容**：不会替你执行 `git add`，只基于你手动暂存的 diff 生成，提交范围完全可控
-- **空状态智能提示**：没有已暂存更改时直接在输入框显示提示，**不调用 AI、不消耗 token**
-- **默认中文**：界面提示跟随 VS Code 显示语言，生成内容语言跟随 diff（判断不了时默认中文）
-- **可定制提示词**：默认输出 `<type>(<scope>): 摘要` + 分条正文格式，可在设置中改成团队规范
-- **任意 OpenAI 兼容接口**：OpenAI、DeepSeek、Anthropic、Gemini、Ollama 本地模型等均可接入
-- **diff 自动截断**：超长 diff 按行数截断，避免超出模型上下文限制
+## Installation
 
----
+### Marketplace
 
-## 使用方法 / Usage
+1. Open the Extensions view in VS Code (`Ctrl+Shift+X` on Windows/Linux or `Cmd+Shift+X` on macOS).
+2. Search for **AI Commit Generator** by **u7pi**.
+3. Click **Install**.
 
-1. 编写代码，并在源代码管理面板中**暂存更改**（点击 `+` 或 `git add`）
-2. 点击标题栏的 **✨ sparkle 按钮**
-3. 审查自动填入的提交信息
-4. 点击 **Commit ✓** 提交
+### Local VSIX
 
----
-
-## 安装 / Installation
-
-**从应用市场（Marketplace）：**
-
-1. 打开 VSCode，进入扩展面板（`Ctrl + Shift + X`）
-2. 搜索 `AI Commit Generator`
-3. 点击 **Install**
-
-**手动安装 VSIX：**
+Use **Extensions: Install from VSIX...** from the Command Palette, or run:
 
 ```bash
-code --install-extension ai-commit-generator-*.vsix
+code --install-extension ai-commit-generator-0.2.6.vsix
 ```
 
----
+## Usage
 
-## 设置 / Settings
+1. Configure your API base URL, model, and API key if required by your provider.
+2. Stage changes in Source Control using the `+` button or `git add`.
+3. Click the wand button in the Source Control title bar, or run **AI Commit Generator: Generate Commit Message from Staged Changes** from the Command Palette.
+4. Review and edit the generated message in the Source Control input box.
+5. Commit when you are ready.
 
-打开设置（`Ctrl + ,`）搜索 `aiCommit`：
+No staged changes means no AI request. If a Source Control repository is unavailable but generation succeeds, the message is copied to the clipboard.
 
-API 地址可在设置中直接输入，也可按 `Ctrl + Shift + P` 运行“AI Commit Generator：选择 API 地址”。选择框提供 OpenAI、Kimi、DeepSeek、GLM、Ollama 常用地址；直接输入完整的 `http://` 或 `https://` URL 后按回车即可保存。当前工作区已配置地址时更新工作区设置，否则保存到用户设置。
+## Settings
 
-| 设置项 Setting | 说明 Description | 示例 Example |
-| ----------------------- | --------------------------------------- | ---------------------------------- |
-| `aiCommit.apiBaseUrl`   | 兼容 OpenAI 的 API 接口地址             | `https://api.deepseek.com/v1`      |
-| `aiCommit.apiKey`       | 所配置接口的 API Key                    | `sk-...`                           |
-| `aiCommit.model`        | 模型名称                                | `deepseek-chat`                    |
-| `aiCommit.systemPrompt` | 系统提示词，决定提交信息格式            | （见默认值）                       |
-| `aiCommit.maxDiffLines` | diff 截断行数，防止超出 token 限制      | `500`                              |
-| `aiCommit.gitPath`      | git 可执行文件路径（git 不在 PATH 时）  | `C:\Program Files\Git\bin\git.exe` |
+Open Settings and search for `aiCommit`.
 
----
+| Setting | Description | Default |
+| --- | --- | --- |
+| `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.openai.com/v1` |
+| `aiCommit.apiKey` | API key for the endpoint; leave empty if authentication is not required | Empty |
+| `aiCommit.model` | Model ID supported by your endpoint | `gpt-4o` |
+| `aiCommit.systemPrompt` | Custom system prompt; leave empty to use the built-in language-specific prompt | Empty |
+| `aiCommit.maxDiffChars` | Maximum diff characters sent to the API; excess is truncated | `6000` |
+| `aiCommit.temperature` | Sampling temperature; set to `-1` to omit it for models that require a fixed temperature | `0.3` |
+| `aiCommit.timeoutMs` | API request timeout in milliseconds | `30000` |
+| `aiCommit.gitPath` | Git executable name or full path | `git` |
 
-## 接口配置示例 / Provider Examples
+### Select an API base URL
 
-**DeepSeek**
+Enter the URL in Settings or run **AI Commit Generator: Select API Base URL (Custom Input Supported)** from the Command Palette. The picker offers OpenAI, Kimi, DeepSeek, GLM, and Ollama presets. You can also type a complete `http://` or `https://` URL and press Enter.
 
-```
-apiBaseUrl: https://api.deepseek.com/v1
-model: deepseek-chat
-```
+If the current workspace already has an API base URL configured, the picker updates the workspace setting. Otherwise it updates the user setting. Selecting a URL does not change the model or API key.
 
-**Anthropic**
+### Commit format and language
 
-```
-apiBaseUrl: https://api.anthropic.com/v1
-model: claude-sonnet-4-6
-```
+The built-in prompt requests Conventional Commits:
 
-**OpenAI**
+```text
+<type>(<scope>): <subject>
 
-```
-apiBaseUrl: https://api.openai.com/v1
-model: gpt-4o
-```
-
-**本地 Ollama / Local Ollama**
-
-```
-apiBaseUrl: http://localhost:11434/v1
-model: llama3
-apiKey: (留空 / leave blank)
+<body, when needed>
 ```
 
----
+The subject and body are requested in English for all display languages except `zh-cn`, which requests Simplified Chinese. The output language follows the VS Code display language, regardless of the language in the diff. The type and scope remain in English.
 
-## 常见问题 / Troubleshooting
+A non-empty `aiCommit.systemPrompt` replaces the built-in prompt without modification. For example, use `Generate a Conventional Commit message from the diff. Always write the subject and body in English. Output only the commit message.` to request English with any display language.
 
-**Windows 上提示 `git is not recognized`**
+An explicitly saved prompt from an older version is retained. Clear it to use the new built-in language selection.
 
-VSCode 扩展进程可能没有继承系统的 PATH。将 `aiCommit.gitPath` 设置为 git 完整路径：
+## Provider examples
 
-1. 打开设置（`Ctrl + ,`）→ 搜索 `aiCommit.gitPath`
-2. 填入 git 路径，通常是 `C:\Program Files\Git\bin\git.exe`
-   （也可在 Git Bash 中运行 `where git` 查看）
+Use an endpoint that supports the OpenAI-compatible `/chat/completions` request format. Set the model and API key separately; model availability depends on your provider.
 
-**生成的提交信息语言不符合预期**
+### OpenAI
 
-生成语言默认跟随 diff 内容的主要语言（diff 全是英文则输出英文）。如需固定语言，修改 `aiCommit.systemPrompt`，例如加上"始终使用中文输出"。
+```json
+{
+  "aiCommit.apiBaseUrl": "https://api.openai.com/v1",
+  "aiCommit.model": "gpt-4o"
+}
+```
 
-**点击生成按钮没有反应？**
+### DeepSeek
 
-- 未暂存任何更改时，提示直接显示在输入框中，且不会调用 AI——请先暂存更改
-- 需要认证的接口请配置 API Key；本地 Ollama 等无需认证的接口可留空，认证失败时会显示接口返回的错误
+```json
+{
+  "aiCommit.apiBaseUrl": "https://api.deepseek.com/v1",
+  "aiCommit.model": "deepseek-chat"
+}
+```
 
----
+### Kimi and GLM
 
-## 开发 / Development
+The API picker includes `https://api.moonshot.cn/v1` for Kimi and `https://open.bigmodel.cn/api/paas/v4` for GLM. Select a model supported by your account and configure its API key.
+
+### Local Ollama
+
+```json
+{
+  "aiCommit.apiBaseUrl": "http://localhost:11434/v1",
+  "aiCommit.model": "llama3",
+  "aiCommit.apiKey": ""
+}
+```
+
+Start Ollama and ensure the selected model is installed. An API key can be left empty for a local endpoint that does not require authentication.
+
+### Claude, Gemini, and other models
+
+Use an OpenAI-compatible gateway or endpoint offered by your provider. The extension does not implement Anthropic's native Messages API or Google's native Gemini API. Enter the compatible base URL and the model ID accepted by that endpoint.
+
+## Troubleshooting
+
+### Git is not found on Windows
+
+The VS Code extension process may not have Git in its `PATH`. Set `aiCommit.gitPath` to the full executable path, for example `C:\Program Files\Git\bin\git.exe`. Run `where.exe git` in PowerShell or Command Prompt to locate it.
+
+### The commit message uses the wrong language
+
+Leave `aiCommit.systemPrompt` empty to use the built-in display-language selection. If it has a saved value, edit its language instructions or clear it. Generated text is produced by the model and should always be reviewed.
+
+### No message is generated
+
+- Stage your changes first. Without a staged diff, the extension writes a hint to the Source Control input and skips the API call.
+- Check the base URL, model, and API key. Authentication and provider errors are shown as returned by the API.
+- For models that reject a configurable temperature, set `aiCommit.temperature` to `-1`.
+- If the request times out, check the endpoint or increase `aiCommit.timeoutMs`.
+
+## Development
 
 ```bash
 git clone https://github.com/u7pi/ai-commit-generator
 cd ai-commit-generator
 npm install
+npm test
 npm run compile
-# Press F5 in VSCode to launch the Extension Development Host
 ```
 
-打包为 `.vsix`：
+Press `F5` in VS Code to launch the Extension Development Host. For locale checks, use **Configure Display Language**, restart the host, and verify English and `zh-cn` separately.
+
+## Packaging and publishing
+
+Before packaging, synchronize the version in `package.json` and `package-lock.json`, update both changelogs, and run:
 
 ```bash
+npm test
+npm run compile
+git diff --check
 npx @vscode/vsce package
 ```
 
-发布：
+Install the resulting VSIX to check the commands, Settings descriptions, and generation workflow. The package must include `out/extension.js`, runtime dependencies, English base resources, `package.nls.zh-cn.json`, README, and both changelogs. Source files, test scripts, and source maps are excluded.
+
+After verifying the package, publish with the configured publisher account:
 
 ```bash
-npx @vscode/vsce publish --no-dependencies
+npx @vscode/vsce publish
 ```
 
----
+Runtime dependencies are required; do not omit them when packaging or publishing.
 
-## 更新日志 / Changelog
+## Changelog and license
 
-详见 [CHANGELOG.md](./CHANGELOG.md)。
+See the [English changelog](./CHANGELOG.md) or [简体中文更新日志](./CHANGELOG.zh-CN.md).
 
----
+Licensed under [MIT](./LICENSE).
 
-## 许可证 / License
+## 简体中文快速说明
 
-MIT
+本扩展读取**已暂存**的 diff，使用兼容 OpenAI Chat Completions 的模型生成提交信息并填入源代码管理输入框。不会自动暂存或提交；没有已暂存更改时不调用 AI。
+
+1. 在设置中搜索 `aiCommit`，配置 API 地址、模型和所需的 API Key。
+2. 手动暂存更改，点击源代码管理标题栏的魔杖按钮，或运行“AI Commit Generator：根据已暂存的更改生成提交信息”。
+3. 审查生成的提交信息后再提交。
+
+运行“AI Commit Generator：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。
+
+VS Code 显示语言为简体中文（`zh-cn`）时，界面和内置提示词使用中文；其他语言统一使用英文。`aiCommit.systemPrompt` 留空时启用该行为，已有自定义提示词仍优先使用。如需固定生成语言，请修改自定义提示词；如需使用新的内置规则，请清空旧提示词。
+
+`aiCommit.maxDiffChars` 默认 `6000`，按字符截断 diff；`temperature` 默认 `0.3`，设为 `-1` 可省略该参数；`timeoutMs` 默认 `30000` 毫秒。Git 不在 PATH 时设置 `gitPath` 的完整路径。无需认证的本地 Ollama 可将 API Key 留空。
+
+更多配置与排查步骤见上方英文文档，历史变更见[简体中文更新日志](./CHANGELOG.zh-CN.md)。

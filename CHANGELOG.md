@@ -1,41 +1,48 @@
 # Changelog
 
+## 0.2.6
+
+- Make the Marketplace description, base localization resources, README, and main changelog English, while retaining Simplified Chinese resources and a Chinese quick start.
+- Select the built-in prompt by VS Code display language: Chinese for `zh-cn`, English otherwise. Custom prompts continue to take priority.
+- Set the default `systemPrompt` to an empty string, correct character-based diff truncation documentation, and document all settings.
+- Add tests for language fallback, custom prompts, and localization resource completeness.
+
 ## 0.2.5
 
-- 新增“选择 API 地址”快捷选择框，提供 OpenAI、Kimi、DeepSeek、GLM、Ollama 常用地址，并支持直接输入自定义 URL
-- 设置页保留 API 地址输入框；快捷选择框在已有工作区配置时更新工作区，否则更新用户设置
+- Add an API base URL picker with OpenAI, Kimi, DeepSeek, GLM, and Ollama presets, plus custom URL input.
+- Retain direct URL entry in Settings. The picker updates workspace settings when a workspace URL exists, and user settings otherwise.
 
 ## 0.2.4
 
-- 修复：API 响应中断后请求持续等待的问题
-- 修复：多仓库根路径前缀相同时选错仓库的问题
-- 修复：中文响应跨数据块传输时可能出现乱码的问题
-- 修复：`aiCommit.gitPath` 设置未用于 diff 和 status 操作的问题
-- 修复：允许本地 Ollama 等无需认证的接口使用空 API Key
+- Fix requests waiting indefinitely after an interrupted API response.
+- Fix repository selection when multiple repository paths share a prefix.
+- Preserve UTF-8 Chinese characters when responses split them across data chunks.
+- Use the configured `aiCommit.gitPath` for diff and status operations.
+- Allow an empty API key for endpoints that require no authentication, such as local Ollama.
 
 ## 0.2.3
 
-- 修复：只接受固定 temperature 的模型（如 kimi-for-coding）返回 400 的问题；`aiCommit.temperature` 设为 -1 时请求将不携带该参数
+- Fix HTTP 400 errors for models that only accept a fixed temperature, such as kimi-for-coding. Set `aiCommit.temperature` to `-1` to omit the parameter.
 
 ## 0.2.2
 
-- 代码重构：用 simple-git 替代 child_process 执行 Git 操作，多仓库工作区下从对应仓库的 SCM 视图触发时使用该仓库
-- 新增配置：`maxDiffChars`（按字符截断 diff）、`temperature`（采样温度）、`timeoutMs`（请求超时）；移除 `maxDiffLines`
-- 生成进度条支持取消，取消会中止 API 请求
-- 未配置自定义提示词时使用内置的 Conventional Commits 中文指南作为系统提示词
-- 增加 Logger 与配置缓存（配置变更自动失效）
+- Replace child_process Git operations with simple-git. Commands invoked from a repository's Source Control view use that repository in workspaces with multiple repositories.
+- Add `maxDiffChars` for character-based diff truncation, `temperature`, and `timeoutMs`; remove `maxDiffLines`.
+- Support cancellation in the generation progress UI, aborting the API request.
+- Use a built-in Chinese Conventional Commits guide when no custom prompt is configured.
+- Add logging and configuration caching with automatic invalidation on configuration changes.
 
 ## 0.2.1
 
-- 仅分析已暂存的更改，不再自动执行 `git add`，提交范围完全由用户控制
-- 空状态提示区分"无任何更改"与"有更改但未暂存"，均未暂存时引导用户先暂存
-- 完善 README 细节与功能说明（中英双语），界面提示与实际行为保持一致
-- 新增 CHANGELOG.md
+- Analyze staged changes only and stop running `git add` automatically, leaving the commit scope under user control.
+- Distinguish no changes from unstaged changes and prompt the user to stage changes when needed.
+- Improve README details and feature descriptions with Chinese and English text, and align interface hints with actual behavior.
+- Add CHANGELOG.md.
 
 ## 0.2.0
 
-- 更名为 **AI Commit Generator**（原 AI Commit Message Generator by Humaid）
-- 默认系统提示词优化：Conventional Commits 格式（`type(scope): 摘要` + 分条正文），输出语言跟随 diff，默认中文
-- 无暂存更改时直接在输入框显示提示，不连接 AI、不消耗 token
-- 界面提示（命令标题、设置说明、错误/进度信息）支持中文，默认中文
-- 更换新图标（紫靛渐变圆角方块 + 白色星形）
+- Rename the extension to **AI Commit Generator** from AI Commit Message Generator by Humaid.
+- Improve the default prompt with Conventional Commits formatting (`type(scope): subject` plus a bullet-point body), requesting the diff's primary language and defaulting to Chinese.
+- Show a hint directly in the input box when no changes are staged, without calling AI or consuming tokens.
+- Add Chinese command titles, setting descriptions, errors, and progress text, with Chinese as the default.
+- Replace the icon with a white star on an indigo-purple gradient rounded square.

@@ -22,7 +22,38 @@ class Logger {
 
 // ─── Default System Prompt ──────────────────────────────────────────────────
 
-const DEFAULT_SYSTEM_PROMPT = `# Git 提交信息生成指南
+const DEFAULT_SYSTEM_PROMPT_EN = `# Git Commit Message Guide
+
+## Role
+You are a Git commit message assistant. Output only the commit message, with no explanation, greeting, or extra content.
+
+## Output format
+<type>(<scope>): <subject>
+
+<body>
+
+## Type reference
+| Type     | Emoji | Description         |
+| -------- | ----- | ------------------- |
+| feat     | ✨    | New feature         |
+| fix      | 🐛    | Bug fix             |
+| docs     | 📝    | Documentation       |
+| style    | 💄    | Code formatting     |
+| refactor | ♻️    | Refactoring         |
+| perf     | ⚡️   | Performance         |
+| test     | ✅    | Tests               |
+| build    | 📦    | Build system        |
+| ci       | 👷    | CI configuration    |
+| chore    | 🔧    | Other maintenance   |
+
+## Rules
+1. Use an imperative subject with a lowercase first letter and no trailing period
+2. Use a lowercase English scope, such as auth, api, or ui
+3. Use bullet points in the body to describe reasons and details when needed
+4. Output only the commit message, without markdown code fences
+5. Write the subject and body in English, regardless of the language in the diff`;
+
+const DEFAULT_SYSTEM_PROMPT_ZH_CN = `# Git 提交信息生成指南
 
 ## 角色
 你是 Git 提交信息生成助手。仅输出提交信息本身，不要任何解释、问候或额外内容。
@@ -50,12 +81,14 @@ const DEFAULT_SYSTEM_PROMPT = `# Git 提交信息生成指南
 1. Subject 使用祈使句，首字母不大写，末尾不加句号
 2. Scope 用英文小写，如 auth、api、ui
 3. Body 用中文分条说明变更原因和细节（如有必要）
-4. 仅输出提交信息，不输出 markdown 代码块标记`;
+4. 仅输出提交信息，不输出 markdown 代码块标记
+5. Subject 和 Body 使用中文，不受 diff 内容语言影响`;
 
 // ─── i18n ───────────────────────────────────────────────────────────────────
 
-const isZh = vscode.env.language.toLowerCase().startsWith("zh");
+const isZh = vscode.env.language === "zh-cn";
 const t = (zh: string, en: string) => (isZh ? zh : en);
+const DEFAULT_SYSTEM_PROMPT = isZh ? DEFAULT_SYSTEM_PROMPT_ZH_CN : DEFAULT_SYSTEM_PROMPT_EN;
 
 // ─── Config Manager ─────────────────────────────────────────────────────────
 
