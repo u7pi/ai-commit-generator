@@ -1,8 +1,8 @@
 {
-  "command.generate.title": "AI Commit Generator: Generate Commit Message from Staged Changes",
-  "command.selectApiBaseUrl.title": "AI Commit Generator: Select API Base URL (Custom Input Supported)",
-  "config.title": "AI Commit",
-  "config.apiBaseUrl.description": "Base URL of the OpenAI-compatible API. Enter a URL directly, or run 'AI Commit Generator: Select API Base URL' to choose OpenAI, Kimi, DeepSeek, GLM, Ollama, or a custom URL.",
+  "command.generate.title": "Simple AI Committer: Generate Commit Message from Staged Changes",
+  "command.selectApiBaseUrl.title": "Simple AI Committer: Select API Base URL (Custom Input Supported)",
+  "config.title": "Simple AI Committer",
+  "config.apiBaseUrl.description": "Base URL of the OpenAI-compatible API. Enter a URL directly, or run 'Simple AI Committer: Select API Base URL' to choose OpenAI, Kimi, DeepSeek, GLM, Ollama, or a custom URL.",
   "config.apiKey.description": "Your API key for the configured endpoint",
   "config.model.description": "Model name to use (e.g. deepseek-chat, claude-sonnet-4-6, gpt-4o)",
   "config.systemPrompt.description": "Custom system prompt sent to the LLM. Leave empty to use the built-in prompt: Simplified Chinese commits for the zh-cn VS Code display language, English otherwise.",

@@ -2,6 +2,7 @@
 
 ## 0.2.6
 
+- 更名为 **Simple AI Committer**，Marketplace 扩展 ID 为 `u7pi.simple-ai-committer`
 - Marketplace 描述、默认本地化资源、README 和主更新日志改为英文，保留简体中文资源和中文快速说明
 - 内置提示词根据 VS Code 显示语言切换：zh-cn 使用中文，其他语言使用英文；自定义提示词继续优先使用
 - systemPrompt 默认值改为空字符串，修正 diff 按字符截断的说明并补全配置文档

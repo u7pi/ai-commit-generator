@@ -2,6 +2,7 @@
 
 ## 0.2.6
 
+- Rename the extension to **Simple AI Committer**, with Marketplace ID `u7pi.simple-ai-committer`.
 - Make the Marketplace description, base localization resources, README, and main changelog English, while retaining Simplified Chinese resources and a Chinese quick start.
 - Select the built-in prompt by VS Code display language: Chinese for `zh-cn`, English otherwise. Custom prompts continue to take priority.
 - Set the default `systemPrompt` to an empty string, correct character-based diff truncation documentation, and document all settings.

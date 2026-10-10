@@ -418,8 +418,8 @@ async function generateCommitMessage(arg?: any) {
     {
       location: vscode.ProgressLocation.SourceControl,
       title: t(
-        "AI Commit Generator：正在生成提交信息…",
-        "AI Commit Generator: Generating commit message…",
+        "Simple AI Committer：正在生成提交信息…",
+        "Simple AI Committer: Generating commit message…",
       ),
       cancellable: true,
     },

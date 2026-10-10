@@ -1,8 +1,8 @@
-# AI Commit Generator
+# Simple AI Committer
 
-Generate Git commit messages from **staged changes** using an OpenAI-compatible LLM, then insert them directly into the VS Code Source Control input box.
+A simple, practical way to generate Git commit messages from **staged changes** using an OpenAI-compatible LLM, then insert them directly into the VS Code Source Control input box.
 
-[Marketplace](https://marketplace.visualstudio.com/items?itemName=u7pi.ai-commit-generator) · [GitHub](https://github.com/u7pi/ai-commit-generator) · [简体中文快速说明](#简体中文快速说明)
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=u7pi.simple-ai-committer) · [GitHub](https://github.com/u7pi/ai-commit-generator) · [简体中文快速说明](#简体中文快速说明)
 
 Forked from [humaid24/ai-commit-generator](https://github.com/humaid24/ai-commit-generator) under the MIT license.
 
@@ -22,7 +22,7 @@ Forked from [humaid24/ai-commit-generator](https://github.com/humaid24/ai-commit
 ### Marketplace
 
 1. Open the Extensions view in VS Code (`Ctrl+Shift+X` on Windows/Linux or `Cmd+Shift+X` on macOS).
-2. Search for **AI Commit Generator** by **u7pi**.
+2. Search for **Simple AI Committer** by **u7pi**.
 3. Click **Install**.
 
 ### Local VSIX
@@ -30,14 +30,14 @@ Forked from [humaid24/ai-commit-generator](https://github.com/humaid24/ai-commit
 Use **Extensions: Install from VSIX...** from the Command Palette, or run:
 
 ```bash
-code --install-extension ai-commit-generator-0.2.6.vsix
+code --install-extension simple-ai-committer-0.2.6.vsix
 ```
 
 ## Usage
 
 1. Configure your API base URL, model, and API key if required by your provider.
 2. Stage changes in Source Control using the `+` button or `git add`.
-3. Click the wand button in the Source Control title bar, or run **AI Commit Generator: Generate Commit Message from Staged Changes** from the Command Palette.
+3. Click the wand button in the Source Control title bar, or run **Simple AI Committer: Generate Commit Message from Staged Changes** from the Command Palette.
 4. Review and edit the generated message in the Source Control input box.
 5. Commit when you are ready.
 
@@ -60,7 +60,7 @@ Open Settings and search for `aiCommit`.
 
 ### Select an API base URL
 
-Enter the URL in Settings or run **AI Commit Generator: Select API Base URL (Custom Input Supported)** from the Command Palette. The picker offers OpenAI, Kimi, DeepSeek, GLM, and Ollama presets. You can also type a complete `http://` or `https://` URL and press Enter.
+Enter the URL in Settings or run **Simple AI Committer: Select API Base URL (Custom Input Supported)** from the Command Palette. The picker offers OpenAI, Kimi, DeepSeek, GLM, and Ollama presets. You can also type a complete `http://` or `https://` URL and press Enter.
 
 If the current workspace already has an API base URL configured, the picker updates the workspace setting. Otherwise it updates the user setting. Selecting a URL does not change the model or API key.
 
@@ -183,10 +183,10 @@ Licensed under [MIT](./LICENSE).
 本扩展读取**已暂存**的 diff，使用兼容 OpenAI Chat Completions 的模型生成提交信息并填入源代码管理输入框。不会自动暂存或提交；没有已暂存更改时不调用 AI。
 
 1. 在设置中搜索 `aiCommit`，配置 API 地址、模型和所需的 API Key。
-2. 手动暂存更改，点击源代码管理标题栏的魔杖按钮，或运行“AI Commit Generator：根据已暂存的更改生成提交信息”。
+2. 手动暂存更改，点击源代码管理标题栏的魔杖按钮，或运行“Simple AI Committer：根据已暂存的更改生成提交信息”。
 3. 审查生成的提交信息后再提交。
 
-运行“AI Commit Generator：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。
+运行“Simple AI Committer：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。
 
 VS Code 显示语言为简体中文（`zh-cn`）时，界面和内置提示词使用中文；其他语言统一使用英文。`aiCommit.systemPrompt` 留空时启用该行为，已有自定义提示词仍优先使用。如需固定生成语言，请修改自定义提示词；如需使用新的内置规则，请清空旧提示词。
 
