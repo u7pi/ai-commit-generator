@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - Once the API key lives in SecretStorage, the `aiCommit.apiKey` settings field shows `*****` instead of being cleared, so the Settings UI always reflects that a key is stored. Keys saved through migration and through **Set API Key** both write the mask; **Clear Stored API Key** also removes it.
 - Default `aiCommit.temperature` to `-1` (omit the parameter entirely): most current models (Claude, GPT-5.x, Kimi) reject a custom temperature with a 400 error, while omitting it is always accepted. Set `0–2` explicitly only for models that still honor it.
