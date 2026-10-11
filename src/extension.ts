@@ -402,14 +402,15 @@ function clearingInProgress(): boolean {
   return true;
 }
 
-function clearableScopes(): { label: string; target: vscode.ConfigurationTarget; uri?: vscode.Uri }[] {
-  const scopes: { label: string; target: vscode.ConfigurationTarget; uri?: vscode.Uri }[] = [
+function clearableScopes(): { label: string; target: vscode.ConfigurationTarget }[] {
+  // All eight settings are window-scoped (the manifest declares no `scope`),
+  // so VS Code rejects WorkspaceFolder targets for them; only Global and
+  // Workspace can hold them.
+  const scopes: { label: string; target: vscode.ConfigurationTarget }[] = [
     { label: t("用户", "User"), target: vscode.ConfigurationTarget.Global },
   ];
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  if (folders.length) scopes.push({ label: t("工作区", "Workspace"), target: vscode.ConfigurationTarget.Workspace });
-  for (const folder of folders) {
-    scopes.push({ label: `${t("文件夹", "Folder")} "${folder.name}"`, target: vscode.ConfigurationTarget.WorkspaceFolder, uri: folder.uri });
+  if (vscode.workspace.workspaceFolders?.length) {
+    scopes.push({ label: t("工作区", "Workspace"), target: vscode.ConfigurationTarget.Workspace });
   }
   return scopes;
 }
@@ -423,8 +424,8 @@ async function clearAllData() {
   }
   const confirmLabel = t("清除所有数据", "Clear All Data");
   const choice = await vscode.window.showWarningMessage(
-    t("将从当前用户、当前工作区及所有打开文件夹的设置中删除 Simple AI Committer 的全部 8 项配置（可能修改项目的 .vscode/settings.json 或工作区文件），并删除安全存储中的 API Key。取消或关闭不修改任何数据。",
-      "This removes all 8 Simple AI Committer settings from user, current workspace, and all open folder settings (it may modify .vscode/settings.json or the workspace file), and deletes the API key from secure storage. Canceling changes nothing."),
+    t("将从当前用户与当前工作区的设置中删除 Simple AI Committer 的全部 8 项配置（可能修改项目的 .vscode/settings.json 或工作区文件），并删除安全存储中的 API Key。取消或关闭不修改任何数据。",
+      "This removes all 8 Simple AI Committer settings from user and current workspace settings (it may modify .vscode/settings.json or the workspace file), and deletes the API key from secure storage. Canceling changes nothing."),
     { modal: true },
     confirmLabel,
   );
@@ -449,7 +450,7 @@ async function clearAllData() {
       for (const key of CLEARABLE_SETTINGS) {
         for (const scope of scopes) {
           try {
-            await vscode.workspace.getConfiguration("aiCommit", scope.uri ?? null).update(key, undefined, scope.target);
+            await vscode.workspace.getConfiguration("aiCommit").update(key, undefined, scope.target);
           } catch {
             failures.push(`${scope.label} / ${key}`);
           }

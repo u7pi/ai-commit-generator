@@ -47,7 +47,7 @@ The defaults are `https://api.deepseek.com/v1` and `deepseek-flash`; explicit UR
 
 After updating or reinstalling the same extension ID, a retained secure key restores `*****` in an empty settings field on startup, without a network check. The mask means a key is stored. A generation request returning HTTP 401 clears the rejected key and its masks; 403, network errors, and timeouts retain them. A late response cannot clear a replacement key or newer settings.
 
-Uninstalling the extension keeps your settings and the stored key. To remove them first, run **Simple AI Committer: Clear All Settings and Stored Key** and confirm: it deletes all eight settings from user, workspace, and every open folder scope (possibly editing `.vscode/settings.json` or the workspace file) and the key from SecretStorage, restoring defaults; canceling changes nothing. It is refused while generation is running, key and URL commands pause during cleanup, and per-item failures are reported by scope and setting name so you can retry — the command is idempotent. See [uninstalling without leaving data](./docs/troubleshooting.md#uninstalling-without-leaving-data).
+Uninstalling the extension keeps your settings and the stored key. To remove them first, run **Simple AI Committer: Clear All Settings and Stored Key** and confirm: it deletes all eight settings from user and current workspace scopes (possibly editing `.vscode/settings.json` or the workspace file) and the key from SecretStorage, restoring defaults; canceling changes nothing. It is refused while generation is running, key and URL commands pause during cleanup, and per-item failures are reported by scope and setting name so you can retry — the command is idempotent. See [uninstalling without leaving data](./docs/troubleshooting.md#uninstalling-without-leaving-data).
 
 Cancel from the Git-reading or generation notification. Git commands have a fixed 30-second deadline; API requests use `timeoutMs` and reject response bodies over 1 MiB. Repeated clicks for the same repository are skipped while generation is running. Edited drafts are preserved; changed staged content discards the result. Empty-stage warnings never alter commit text: the SCM button uses a temporary placeholder, while the Command Palette uses notification-only hints when no public placeholder is available.
 
@@ -85,7 +85,7 @@ Licensed under [MIT](./LICENSE).
 
 无安全密钥时，设置中的明文 Key 可选择“迁移并掩码”或明确授权“本窗口使用明文，不迁移”；授权只对同一密钥和地址有效，取消不发送请求。迁移成功后有效设置层显示 *****，其他可访问用户／当前工作区层中相同的明文副本删除，不同值保留并提示检查。设置更新失败会保留安全记录并明确报告残留。同一已绑定地址下，新输入的明文 Key 可自动更新存储；地址变化仍需确认。等待输入期间不阻塞设置或清除命令，状态变化会使旧操作失效。“清除已存储的 API Key”同时移除安全记录和可访问设置层中的掩码；遗留明文需重新授权。降级到旧版本时需要重新设置密钥。
 
-卸载扩展本身不会删除配置或安全密钥。卸载前运行“Simple AI Committer：清除所有配置和密钥”并确认：从当前用户、当前工作区和所有打开文件夹的设置中删除全部 8 项配置（可能修改 `.vscode/settings.json` 或工作区文件），并删除 SecretStorage 中的密钥，恢复默认设置；取消或关闭确认框不修改任何数据。生成进行中会拒绝清理；清理期间其他密钥与地址命令暂停；单项失败按作用域和设置名列出（不含配置值），可重试，命令幂等。
+卸载扩展本身不会删除配置或安全密钥。卸载前运行“Simple AI Committer：清除所有配置和密钥”并确认：从当前用户与当前工作区的设置中删除全部 8 项配置（可能修改 `.vscode/settings.json` 或工作区文件），并删除 SecretStorage 中的密钥，恢复默认设置；取消或关闭确认框不修改任何数据。生成进行中会拒绝清理；清理期间其他密钥与地址命令暂停；单项失败按作用域和设置名列出（不含配置值），可重试，命令幂等。
 
 Git 读取和生成通知均提供取消按钮。同一仓库重复点击会跳过，不同仓库可以并行；发送前和写入前都会比较完整暂存内容，变化时丢弃结果并提示重试；生成期间修改草稿会保留草稿。无暂存更改时保留警告通知，绝不修改提交文本；SCM 标题栏入口使用临时占位提示，暂存出现、再次生成、仓库关闭或扩展停用时恢复。命令面板无法取得公开输入框时仅显示通知。内置 Git API 不可用时使用工作区路径，成功后复制到剪贴板。401/403 提示在进度结束并释放仓库锁后显示，可直接重试或设置密钥。
 

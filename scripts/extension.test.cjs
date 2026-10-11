@@ -1536,7 +1536,7 @@ test("clearing all data with a dismissed confirmation writes nothing", async () 
   assert.equal(storedKey(extension), "secure-secret");
 });
 
-test("clearing all data removes the eight settings across user, workspace and all folder scopes", async () => {
+test("clearing all data removes the eight settings across user and workspace scopes only", async () => {
   const folderA = path.resolve("folder-a");
   const folderB = path.resolve("folder-b");
   const scopes = {
@@ -1551,15 +1551,17 @@ test("clearing all data removes the eight settings across user, workspace and al
   await extension.ready;
   extension.observed.updates.length = 0;
   await extension.observed.commands.get("ai-commit.clearAllData")();
-  for (const bucket of [scopes.global, scopes.workspace, scopes.folders[folderA], scopes.folders[folderB]]) {
+  for (const bucket of [scopes.global, scopes.workspace]) {
     for (const key of Object.keys(bucket)) assert.equal(bucket[key], undefined, key);
   }
-  assert.equal(extension.observed.updates.length, 32);
+  // The settings are window-scoped, so folder buckets are never touched.
+  assert.equal(scopes.folders[folderA].gitPath, "git-a");
+  assert.equal(scopes.folders[folderB].timeoutMs, 1);
+  assert.equal(extension.observed.updates.length, 16);
   assert.ok(extension.observed.updates.every((update) => update.value === undefined));
   assert.equal(extension.observed.updates.filter((update) => update.target === 1).length, 8);
   assert.equal(extension.observed.updates.filter((update) => update.target === 2).length, 8);
-  assert.equal(extension.observed.updates.filter((update) => update.target === 3 && update.folder === folderA).length, 8);
-  assert.equal(extension.observed.updates.filter((update) => update.target === 3 && update.folder === folderB).length, 8);
+  assert.ok(extension.observed.updates.every((update) => update.target !== 3));
   assert.ok(extension.observed.secretOps.includes("delete"));
   assert.ok(extension.observed.infos.some((message) => /cleared/i.test(message) && /uninstall/i.test(message)));
   assert.equal(extension.observed.errors.length, 0);
