@@ -27,10 +27,10 @@ Base URLs may include query parameters. The extension appends `/chat/completions
 
 ## Test the connection
 
-Run **Simple AI Committer: Test API Connection** from the Command Palette after configuring or changing settings. The extension validates the settings locally first, then sends a minimal probe request (`max_tokens: 1`). No API key yet, a migration, or a new destination approval is handled with the usual dialogs before the probe starts.
+Run **Simple AI Committer: Test API Connection** from the Command Palette after configuring or changing settings. The extension validates the settings locally first, then sends a minimal probe request (`max_tokens: 1`) with the configured temperature (omitted when `-1`, exactly like generation). No key is required: unauthenticated endpoints such as local Ollama answer without an Authorization header, while a server that requires auth answers 401/403 and the probe reports that instead. Migration or a new destination approval still uses the usual dialogs before the probe starts.
 
 - Success: a notification reports the responding model (as returned by the server, falling back to the configured one) and the round-trip time.
-- Failure: the notification explains the likely cause and offers corrective actions — **Set API Key** for 401/403, **Select API Base URL** for 404 and network-level URL problems, and **Open Settings** for invalid values, 400, 429, and other server errors. Timeouts, DNS failures (`ENOTFOUND`), and refused connections get targeted network or local-service (for example Ollama) guidance.
+- Failure: the notification explains the likely cause and offers corrective actions — **Set API Key** for 401/403, **Select API Base URL** for 404 and network-level URL problems, and **Open Settings** for invalid values, 400 (including a model that rejects the configured temperature), 429, and other server errors. Timeouts, DNS failures (`ENOTFOUND`), and refused connections get targeted network or local-service guidance.
 
 The probe only diagnoses: a failed test never deletes the stored key or masks, unlike the automatic cleanup that follows a real generation request returning 401. **Set API Key** also offers **Test Connection** on its success notification, so a freshly saved key can be verified in one click.
 

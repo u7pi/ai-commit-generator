@@ -411,11 +411,12 @@ function clearingInProgress(): boolean {
 function clearableScopes(): { label: string; target: vscode.ConfigurationTarget }[] {
   // All eight settings are window-scoped (the manifest declares no `scope`),
   // so VS Code rejects WorkspaceFolder targets for them; only Global and
-  // Workspace can hold them.
+  // Workspace can hold them. A folder-less .code-workspace still counts: it
+  // can store window-scoped settings even with no workspace folders.
   const scopes: { label: string; target: vscode.ConfigurationTarget }[] = [
     { label: t("用户", "User"), target: vscode.ConfigurationTarget.Global },
   ];
-  if (vscode.workspace.workspaceFolders?.length) {
+  if (vscode.workspace.workspaceFolders?.length || vscode.workspace.workspaceFile) {
     scopes.push({ label: t("工作区", "Workspace"), target: vscode.ConfigurationTarget.Workspace });
   }
   return scopes;
@@ -724,20 +725,14 @@ async function testConnection() {
     if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
     return;
   }
-  if (!apiKey) {
-    const setKey = t("设置 API Key", "Set API Key");
-    const choice = await vscode.window.showWarningMessage(
-      t("AI Commit：尚未设置 API Key。请先在设置中填写，或运行“设置 API Key”命令。", "AI Commit: No API key is set. Fill it in Settings or run 'Set API Key' first."),
-      setKey,
-    );
-    if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
-    return;
-  }
+  // No key is fine: unauthenticated endpoints (e.g. local Ollama) accept the
+  // probe without an Authorization header, and a server that requires auth
+  // answers 401/403, which the failure report turns into key guidance.
   let result: { model?: string; elapsedMs: number };
   try {
     result = await withGenerationProgress(
       t("Simple AI Committer：正在测试 API 连接…", "Simple AI Committer: Testing API connection…"),
-      (signal) => pingApi(config.apiBaseUrl, apiKey, config.model, config.timeoutMs, signal),
+      (signal) => pingApi(config.apiBaseUrl, apiKey, config.model, config.temperature, config.timeoutMs, signal),
     );
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return;
@@ -997,16 +992,25 @@ function callLLM(
 }
 
 // Minimal connectivity probe for the test command: one token, a fixed prompt,
-// and any 2xx response counts as success regardless of content.
+// and any 2xx response counts as success regardless of content. The
+// temperature follows the same omit-unless-configured rule as generation, so
+// a fixed-temperature model rejects the probe exactly as it rejects the real
+// request instead of passing the test and failing later.
 function pingApi(
   baseUrl: string,
   apiKey: string,
   model: string,
+  temperature: number,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<{ model?: string; elapsedMs: number }> {
   const startedAt = Date.now();
-  const payload = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+  const payload = {
+    model,
+    max_tokens: 1,
+    ...(temperature >= 0 ? { temperature } : {}),
+    messages: [{ role: "user", content: "ping" }],
+  };
   return postChatCompletion(baseUrl, apiKey, payload, timeoutMs, signal).then((json) => ({
     model: typeof json?.model === "string" && json.model ? json.model : undefined,
     elapsedMs: Date.now() - startedAt,

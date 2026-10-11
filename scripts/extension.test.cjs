@@ -30,6 +30,7 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
     env: { language, clipboard: { writeText: async (value) => observed.clipboard.push(value) } },
     workspace: {
       workspaceFolders: folderList.length ? folderList : undefined,
+      workspaceFile: options.workspaceFile ? { fsPath: options.workspaceFile, scheme: "file" } : undefined,
       onDidChangeConfiguration: (handler) => {
         configurationEvents.on("change", handler);
         return { dispose() { configurationEvents.off("change", handler); } };
@@ -1630,6 +1631,21 @@ test("clearing all data without a workspace only clears user settings and succee
   assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
 });
 
+test("clearing all data also clears a folder-less workspace file", async () => {
+  const scopes = { global: { model: "custom-model" }, workspace: { model: "ws-model", timeoutMs: 6000 } };
+  const extension = load({}, [], "diff", "en", { scopes, folders: [], workspaceFile: path.resolve("empty.code-workspace"), migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.model, undefined);
+  assert.equal(scopes.workspace.model, undefined);
+  assert.equal(scopes.workspace.timeoutMs, undefined);
+  assert.equal(extension.observed.updates.length, 16);
+  assert.equal(extension.observed.updates.filter((update) => update.target === 1).length, 8);
+  assert.equal(extension.observed.updates.filter((update) => update.target === 2).length, 8);
+  assert.equal(extension.observed.errors.length, 0);
+  assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
+});
+
 test("clearing all data continues after item failures and reports scopes and keys without values", async () => {
   let failedOnce = false;
   const scopes = { global: { apiKey: "sk-do-not-leak", model: "leak-model" }, workspace: { apiKey: "*****" } };
@@ -1848,15 +1864,55 @@ test("connection test reports invalid local settings before any request", async 
   });
 });
 
-test("connection test without a key points to Set API Key", async () => {
-  for (const language of ["en", "zh-cn"]) {
-    const extension = load({}, [], "diff", language, { migrate: true });
+test("connection test probes unauthenticated endpoints without a key", async () => {
+  // A compatible local service (e.g. Ollama) answers without an Authorization header.
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    for (const language of ["en", "zh-cn"]) {
+      const extension = load({ apiBaseUrl: baseUrl, apiKey: "" }, [], "diff", language);
+      await extension.observed.commands.get("ai-commit.testConnection")();
+      assert.equal(extension.observed.errors.length, 0);
+      assert.match(extension.observed.infos[0], language === "zh-cn" ? /连接测试成功/ : /Connection test succeeded/);
+      assert.equal(extension.observed.warnings.length, 0);
+    }
+    assert.deepEqual(headers, [undefined, undefined]);
+  });
+  // A server that requires auth still answers 401, which turns into key guidance.
+  await withServer((_req, res) => { res.writeHead(401); res.end("auth required"); }, async (baseUrl) => {
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "" }, [], "diff", "en", { errorAction: (items) => items[0] });
     await extension.observed.commands.get("ai-commit.testConnection")();
-    assert.equal(extension.observed.warnings.length, 1);
-    assert.match(extension.observed.warnings[0], /API Key/);
+    assert.equal(extension.observed.errors.length, 1);
+    assert.match(extension.observed.errors[0], /401/);
     assert.ok(extension.observed.executed.includes("ai-commit.setApiKey"));
-    assert.equal(extension.observed.progress.length, 0);
-  }
+  });
+});
+
+test("connection test sends the configured temperature with the generation omission rule", async () => {
+  const payloads = [];
+  await withServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => { payloads.push(JSON.parse(body)); reply(res); });
+  }, async (baseUrl) => {
+    for (const [settings, expected] of [[{}, undefined], [{ temperature: 0.3 }, 0.3]]) {
+      const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****", ...settings }, [], "diff", "en", { secureKey: "probe-key" });
+      await extension.observed.commands.get("ai-commit.testConnection")();
+      assert.equal(extension.observed.errors.length, 0);
+      assert.equal(payloads.at(-1).temperature, expected);
+    }
+    // A model that rejects custom temperatures fails the probe too, not just generation.
+    await withServer((_req, res) => {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: { message: "temperature is not supported" } }));
+    }, async (strictBaseUrl) => {
+      const extension = load({ apiBaseUrl: strictBaseUrl, apiKey: "*****", temperature: 0.3, model: "fixed-temp-model" }, [], "diff", "en", { secureKey: "probe-key" });
+      await extension.observed.commands.get("ai-commit.testConnection")();
+      assert.equal(extension.observed.errors.length, 1);
+      assert.match(extension.observed.errors[0], /400/);
+      assert.match(extension.observed.errors[0], /fixed-temp-model/);
+    });
+  });
 });
 
 test("connection test timeout keeps the stored key and suggests network checks", async () => {
