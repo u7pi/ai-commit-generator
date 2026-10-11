@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reaudit R1–R8: discard raw provider errors, honor explicit SCM roots, validate immutable credential snapshots for generation/probes, and preserve replacement/rebound keys on late 401. Coordinate updated local windows with a cancellable shared 5-second file lock; preserve freshly edited settings copies and invalidate URL pickers across clear-all. Expand regression and real-host verification, with refreshed official/dev acceptance packages at version 0.3.2.
+
 - Pin the API base URL, API Key, and Model settings to the top three positions of the Settings UI, ahead of the alphabetical remainder.
 - Add **Simple AI Committer: Test API Connection** to verify settings after configuration: a minimal probe reports the responding model and latency, or maps 401/403, 404, 400, 429, timeouts, DNS failures, and refused connections to corrective guidance with **Set API Key**, **Select API Base URL**, and **Open Settings** actions. The probe needs no key (unauthenticated endpoints like Ollama work) and sends the configured temperature so fixed-temperature models fail the test exactly as they fail generation; it never deletes the stored key. **Set API Key** offers the test on its success notification.
 - Clear all data from a folder-less `.code-workspace` too: workspace-level settings in a workspace file with no folders are now removed instead of surviving an otherwise successful cleanup.
@@ -10,7 +12,7 @@
 - Bind the single stored API key atomically to a normalized request endpoint. Confirm legacy upgrades and destination changes, hide sensitive query values, and make dismissed dialogs cancel generation.
 - Serialize key writes/clears, invalidate stale dialogs, remove matching plaintext copies across accessible scopes, and report preserved differing values or cleanup failures. Explicit plaintext authorization applies only to the same key/endpoint in the current window. Downgrading requires setting the key again.
 - Support absolute Git paths containing spaces, cancel all Git reads, and enforce a fixed 30-second deadline. Recheck the full staged diff before requests and output; discard stale results and preserve edited drafts.
-- End progress and release repository locks before authentication prompts, fall back safely when the Git API is unavailable, and limit success/error response bodies to 1 MiB of received bytes.
+- End progress and release repository locks before authentication prompts, fall back safely when the Git API is unavailable, and limit successful response bodies to 1 MiB of received bytes; HTTP failures stop at headers.
 - Default the API URL to DeepSeek while retaining explicit settings. Keep no-stage notifications and use temporary SCM placeholders instead of modifying commit text; restore placeholders and listeners on staging, retry, close, and deactivation.
 - Expand regression tests, including real simple-git process tests, and synchronize English/Chinese configuration and guides.
 

@@ -11,16 +11,17 @@ const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, testConnection, DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS };",
+  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey: async (...args) => (await getApiKey(...args)).key, resolveCredentials: getApiKey, startCredentialRequest, serializeKeyWrite, checkCredentials, clearRejectedKey, writeSecret, callLLM, generateCommitMessage, selectApiBaseUrl, testConnection, DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
 function load(config = {}, repositories = [], diff = "+ staged change", language = "en", options = {}) {
   const observed = {
     errors: [], warnings: [], infos: [], logs: [], progress: [], clipboard: [], gitOptions: [], diffCalls: 0, statusCalls: 0, updates: [], executed: [],
-    commands: new Map(), secretValues: new Map(options.secureKey ? [["aiCommit.apiKey", options.legacyStored ? options.secureKey : boundKey(config.apiBaseUrl, options.secureKey)]] : []),
+    commands: new Map(), secretValues: options.secretValues ?? new Map(options.secureKey ? [["aiCommit.apiKey", options.legacyStored ? options.secureKey : boundKey(config.apiBaseUrl, options.secureKey)]] : []),
     secretOps: [], summaryArgs: [], inputOptions: [],
   };
+  const secretEvents = options.secretEvents ?? new EventEmitter();
   const configurationEvents = new EventEmitter();
   const closeEvents = new EventEmitter();
   const folderList = options.folders === undefined
@@ -138,24 +139,34 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
   };
   vm.runInNewContext(js, context);
   const secrets = {
-    get: async (key) => { observed.secretOps.push("get"); return observed.secretValues.get(key); },
+    onDidChange: handler => { secretEvents.on("change", handler); return { dispose() { secretEvents.off("change", handler); } }; },
+    get: async (key) => { observed.secretOps.push("get"); return options.cachedSecret ? options.cachedSecret.value : observed.secretValues.get(key); },
     store: async (key, value) => {
       observed.secretOps.push("store");
       if (typeof options.storeError === "function") await options.storeError(key, value);
       else if (options.storeError) throw new Error(options.storeError);
       observed.secretValues.set(key, value);
+      if (options.cacheDelay) setTimeout(() => { options.cachedSecret.value = value; }, options.cacheDelay);
+      if (options.delayedSecretEvents) setTimeout(() => secretEvents.emit("change", { key }), 20);
+      else secretEvents.emit("change", { key });
     },
     delete: async (key) => {
       observed.secretOps.push("delete");
       if (typeof options.deleteError === "function") await options.deleteError(key);
       else if (options.deleteError) throw new Error(options.deleteError);
       observed.secretValues.delete(key);
+      if (options.cacheDelay) setTimeout(() => { options.cachedSecret.value = undefined; }, options.cacheDelay);
+      if (options.delayedSecretEvents) setTimeout(() => secretEvents.emit("change", { key }), 20);
+      else secretEvents.emit("change", { key });
     },
   };
   const subscriptions = [];
-  const ready = Promise.resolve(context.exports.activate({ subscriptions, secrets }));
+  const storageDir = options.storageDir ?? fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ai-commit-test-"));
+  if (!options.storageDir) test.after(() => fs.rmSync(storageDir, { recursive: true, force: true }));
+  const ready = Promise.resolve(context.exports.activate({ subscriptions, secrets, globalStorageUri: { fsPath: storageDir } }));
   return { ...context.exports.test, observed, vscode, subscriptions, ready, deactivate: context.exports.deactivate,
     changeConfiguration() { configurationEvents.emit("change", { affectsConfiguration: () => true }); },
+    secretEvents, secrets, storageDir,
     closeRepo(target) { closeEvents.emit("close", target); },
   };
 }
@@ -346,7 +357,7 @@ test("UTF-8 characters split across chunks are preserved in success and error bo
       if (status === 200) {
         assert.equal(await request(load(), baseUrl), message);
       } else {
-        await assert.rejects(request(load(), baseUrl), /API request failed \(400\): fix: 修复问题 😀/);
+        await assert.rejects(request(load(), baseUrl), /API request failed \(400\)/);
       }
     });
   }
@@ -805,8 +816,7 @@ test("parallel repositories share a single migration prompt", async () => {
     });
     const work = targets.map((target) => extension.generateCommitMessage(target));
     // The original implementation never offers migration, so avoid waiting indefinitely.
-    await new Promise((resolve) => setImmediate(resolve));
-    if (extension.observed.warnings.length) answer.resolve(await prompted.promise);
+    answer.resolve(await prompted.promise);
     await Promise.all(work);
     assert.equal(extension.observed.warnings.length, 1);
     assert.equal(extension.observed.secretOps.filter((op) => op === "store").length, 1);
@@ -929,11 +939,12 @@ test("key confirmation resolves between the closed Git progress and API progress
   await withServer((_req, res) => reply(res), async (baseUrl) => {
     const target = repo("app");
     let releasePrompt;
+    const prompted = deferred();
     const extension = load({ apiBaseUrl: baseUrl, apiKey: "legacy-secret" }, [target], "diff", "en", {
-      migrate: (items) => new Promise((resolve) => { releasePrompt = () => resolve(items[0]); }),
+      migrate: (items) => new Promise((resolve) => { releasePrompt = () => resolve(items[0]); prompted.resolve(); }),
     });
     const work = extension.generateCommitMessage(target);
-    await new Promise((resolve) => setImmediate(resolve));
+    await prompted.promise;
     // The confirmation is pending with no active progress notification.
     assert.equal(extension.observed.progress.length, 1);
     assert.ok(extension.observed.progress[0].closed);
@@ -1151,7 +1162,7 @@ test("response size limits include success and error bodies and release resource
         const extension = load();
         const controller = new AbortController();
         const result = extension.callLLM(baseUrl, "", "test", "", -1, "diff", 2000, controller.signal);
-        if (excess) await assert.rejects(result, /too large|limit/i);
+        if (excess && status === 200) await assert.rejects(result, /too large|limit/i);
         else if (status === 200) assert.equal(await result, "fix: bounded");
         else await assert.rejects(result, /500/);
         assert.equal(getEventListeners(controller.signal, "abort").length, 0);
@@ -1971,4 +1982,270 @@ test("saving a key offers an immediate connection test", async () => {
       assert.equal(extension.observed.errors.length, 0);
     }
   });
+});
+
+
+test("reaudit: provider bodies and encoded or overlapping query secrets are never diagnostics", async () => {
+  for (const status of [200, 400, 401, 403, 500]) {
+    await withServer((req, res) => {
+      res.writeHead(status);
+      res.end(status === 200 ? JSON.stringify({ error: { message: req.url + " arbitrary-provider-text" } }) : req.url + " arbitrary-provider-text");
+    }, async baseUrl => {
+      const target = repo("privacy");
+      const extension = load({ apiBaseUrl: baseUrl + "?mode=audit&token=%61%75%64%69%74%2dprivate-token" }, [target]);
+      await extension.generateCommitMessage(target);
+      const diagnostics = [...extension.observed.errors, ...extension.observed.logs].join("\n");
+      assert.doesNotMatch(diagnostics, /private-token|%61%75|arbitrary-provider-text|mode=audit/);
+      assert.equal(extension.observed.errors.length, 1);
+    });
+  }
+});
+
+test("reaudit: explicit SCM target never falls back to a different repository", async () => {
+  for (const options of [{}, { gitUnavailable: true }, { gitApiError: true }, { gitDisabled: true }]) {
+    await withServer((_req, res) => res.end(JSON.stringify({ choices: [{ message: { content: "fix: explicit" } }] })), async baseUrl => {
+      const first = repo("first");
+      const explicit = repo("second");
+      const extension = load({ apiBaseUrl: baseUrl }, [first], opts => { assert.equal(opts.baseDir, explicit.rootUri.fsPath); return "+ explicit"; }, "en", options);
+      await extension.generateCommitMessage(explicit);
+      assert.equal(first.inputBox.value, "");
+      assert.deepEqual(extension.observed.clipboard, ["fix: explicit"]);
+    });
+  }
+});
+
+test("reaudit: old plaintext snapshot cannot delete a newer secure key or send after a change", async () => {
+  let sent = 0;
+  await withServer((_req, res) => { sent++; res.writeHead(401); res.end("denied"); }, async baseUrl => {
+    const target = repo("snapshot");
+    let extension;
+    extension = load({ apiBaseUrl: baseUrl, apiKey: "old-plaintext" }, [target], (_opts, call) => {
+      if (call === 2) extension.observed.secretValues.set("aiCommit.apiKey", boundKey(baseUrl, "new-secure-key"));
+      return "diff";
+    }, "en", { migrate: choices => choices[1] });
+    await extension.generateCommitMessage(target);
+    assert.equal(sent, 0);
+    assert.equal(storedKey(extension), "new-secure-key");
+  });
+});
+
+test("reaudit: probe stops if secure storage changes during mask writing", async () => {
+  let sent = 0;
+  await withServer((_req, res) => { sent++; res.end("{}"); }, async baseUrl => {
+    const config = { apiBaseUrl: baseUrl, apiKey: "*****" };
+    let extension;
+    extension = load(config, [], "diff", "en", { secureKey: "old", updateError: async () => { extension.observed.secretValues.delete("aiCommit.apiKey"); } });
+    await extension.ready;
+    config.apiKey = "";
+    extension.changeConfiguration();
+    await extension.testConnection();
+    assert.equal(sent, 0);
+    assert.notEqual(config.apiKey, "*****");
+  });
+});
+
+test("reaudit: migration preserves plaintext changed in another scope during mask write", async () => {
+  const scopes = { global: { apiKey: "old" }, workspace: { apiKey: "old" } };
+  const extension = load({}, [], "diff", "en", { scopes, migrate: true, updateError: async (_key, value) => { if (value === "*****") scopes.global.apiKey = "new"; } });
+  await extension.getApiKey("https://api.deepseek.com/v1");
+  assert.equal(scopes.global.apiKey, "new");
+  assert.match(extension.observed.warnings.join("\n"), /different plaintext/);
+});
+
+test("reaudit: URL picker opened before clear-all cannot restore settings", async () => {
+  const extension = load({ apiBaseUrl: "https://old.example/v1" }, [], "diff", "en", { migrate: true });
+  await extension.ready;
+  const { picker, events } = createPicker(extension);
+  const pending = extension.selectApiBaseUrl();
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  picker.selectedItems = [picker.items[0]];
+  events.emit("accept");
+  await pending;
+  assert.equal(extension.observed.updates.filter(item => item.key === "apiBaseUrl" && item.value !== undefined).length, 0);
+  const next = createPicker(extension);
+  const fresh = extension.selectApiBaseUrl();
+  next.picker.selectedItems = [next.picker.items[0]]; next.events.emit("accept"); await fresh;
+  assert.equal(extension.observed.updates.at(-1).value, "https://api.openai.com/v1");
+});
+
+test("reaudit: large and interrupted authentication bodies still use header status", async () => {
+  for (const status of [401, 403]) for (const interrupted of [false, true]) {
+    await withServer((_req, res) => {
+      res.writeHead(status); res.flushHeaders();
+      if (interrupted) { res.write("private"); setTimeout(() => res.destroy(), 15); }
+      else res.end("private".repeat(180000));
+    }, async baseUrl => {
+      const extension = load({ apiBaseUrl: baseUrl }, [repo("auth")], "diff", "en", { secureKey: "old" });
+      await extension.generateCommitMessage();
+      assert.match(extension.observed.errors[0], new RegExp(String(status)));
+      assert.equal(storedKey(extension), status === 401 ? undefined : "old");
+    });
+  }
+});
+
+
+test("reaudit: independent hosts invalidate old generation and probe snapshots on shared storage changes", async () => {
+  for (const mutation of ["replace", "clear", "rebind"]) {
+    const secretValues = new Map([["aiCommit.apiKey", boundKey(undefined, "old")]]);
+    const secretEvents = new EventEmitter();
+    const storageDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ai-shared-"));
+    const opts = { secretValues, secretEvents, storageDir };
+    const first = load({ apiKey: "*****" }, [], "diff", "en", opts);
+    const second = load({ apiKey: "*****" }, [], "diff", "en", opts);
+    try {
+      await Promise.all([first.ready, second.ready]);
+      const used = await first.resolveCredentials("https://api.deepseek.com/v1");
+      if (mutation === "clear") await second.observed.commands.get("ai-commit.clearApiKey")();
+      else await second.serializeKeyWrite(() => second.secrets.store("aiCommit.apiKey", mutation === "replace" ? boundKey(undefined, "new") : mutation === "rebind" ? boundKey("https://other.example/v1", "old") : used.raw));
+      const before = secretValues.get("aiCommit.apiKey");
+      const controller = new AbortController(); let starts = 0;
+      await assert.rejects(first.startCredentialRequest(used, async () => { starts++; }, controller.signal), /changed/);
+      assert.equal(starts, 0);
+      assert.equal(await first.clearRejectedKey(used), false);
+      assert.equal(secretValues.get("aiCommit.apiKey"), before);
+      assert.ok(!fs.existsSync(path.join(storageDir, "credentials.lock")));
+    } finally { first.subscriptions.forEach(d => d.dispose()); second.subscriptions.forEach(d => d.dispose()); fs.rmSync(storageDir, { recursive: true, force: true }); }
+  }
+});
+
+test("reaudit: self storage events permit successful migration and request launch", async () => {
+  const extension = load({ apiKey: "own-key" }, [], "diff", "en", { migrate: true });
+  await extension.ready;
+  const used = await extension.resolveCredentials("https://api.deepseek.com/v1");
+  assert.equal(used.source, "stored");
+  assert.equal(used.key, "own-key");
+  const result = await extension.startCredentialRequest(used, async () => "started", new AbortController().signal);
+  assert.equal(result, "started");
+  assert.equal(extension.observed.secretOps.filter(op => op === "store").length, 1);
+});
+
+test("reaudit: shared file lock serializes independent hosts and releases on exceptions", async () => {
+  const first = load(); await first.ready;
+  const second = load({}, [], "diff", "en", { storageDir: first.storageDir }); await second.ready;
+  const acquired = deferred(), release = deferred(); const order = [];
+  const held = first.serializeKeyWrite(async () => { order.push("first"); acquired.resolve(); await release.promise; throw new Error("expected"); });
+  const rejected = assert.rejects(held, /expected/);
+  await acquired.promise;
+  const lock = fs.readFileSync(path.join(first.storageDir, "credentials.lock"), "utf8");
+  assert.match(lock, /^\d+:[a-f0-9]{32}$/);
+  const queued = second.serializeKeyWrite(async () => order.push("second"));
+  await new Promise(resolve => setTimeout(resolve, 100)); assert.deepEqual(order, ["first"]);
+  release.resolve(); await rejected; await queued;
+  assert.deepEqual(order, ["first", "second"]);
+  assert.ok(!fs.existsSync(path.join(first.storageDir, "credentials.lock")));
+});
+
+test("reaudit: lock acquisition supports cancellation and never steals an orphan lock", async () => {
+  const extension = load(); await extension.ready;
+  const lockPath = path.join(extension.storageDir, "credentials.lock"); fs.writeFileSync(lockPath, "orphan-owner");
+  const controller = new AbortController(); let writes = 0;
+  const cancelled = extension.serializeKeyWrite(async () => { writes++; }, controller.signal);
+  setTimeout(() => controller.abort(), 60);
+  await assert.rejects(cancelled, { name: "AbortError" });
+  const started = Date.now();
+  await assert.rejects(extension.serializeKeyWrite(async () => { writes++; }), error => {
+    assert.match(error.message, /timed out/); assert.ok(error.message.includes(lockPath)); return true;
+  });
+  assert.ok(Date.now() - started >= 4900);
+  assert.equal(writes, 0); assert.equal(fs.readFileSync(lockPath, "utf8"), "orphan-owner");
+  fs.unlinkSync(lockPath);
+  await extension.serializeKeyWrite(async () => { writes++; }); assert.equal(writes, 1);
+});
+
+test("reaudit: network response wait holds neither the local queue nor shared lock", async () => {
+  const extension = load({}, [], "diff", "en", { secureKey: "old" }); await extension.ready;
+  const used = await extension.resolveCredentials("https://api.deepseek.com/v1");
+  const arrived = deferred(), response = deferred();
+  const pending = extension.startCredentialRequest(used, () => { arrived.resolve(); return response.promise; }, new AbortController().signal);
+  await arrived.promise;
+  await extension.observed.commands.get("ai-commit.clearApiKey")();
+  assert.equal(storedKey(extension), undefined);
+  assert.ok(!fs.existsSync(path.join(extension.storageDir, "credentials.lock")));
+  response.resolve("done"); assert.equal(await pending, "done");
+});
+
+test("reaudit: URL picker selected during clear-all cannot write while clearing", async () => {
+  const entered = deferred(), release = deferred();
+  const extension = load({ apiBaseUrl: "https://old.example/v1" }, [], "diff", "en", { migrate: true, deleteError: async () => { entered.resolve(); await release.promise; } });
+  await extension.ready;
+  const { picker, events } = createPicker(extension); const pending = extension.selectApiBaseUrl();
+  const clear = extension.observed.commands.get("ai-commit.clearAllData")(); await entered.promise;
+  picker.selectedItems = [picker.items[0]]; events.emit("accept"); await pending;
+  release.resolve(); await clear;
+  assert.equal(extension.observed.updates.filter(item => item.key === "apiBaseUrl" && item.value !== undefined).length, 0);
+});
+
+test("reaudit: real Git at explicit target sends only that repository, including closed and missing API cases", async () => {
+  const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ai-targets-"));
+  const git = args => require("node:child_process").execFileSync("git", args);
+  const roots = [path.join(root, "first"), path.join(root, "second")];
+  try {
+    roots.forEach((dir, index) => { fs.mkdirSync(dir); git(["-C", dir, "init", "-q"]); fs.writeFileSync(path.join(dir, "file.txt"), index ? "SECOND_SENTINEL" : "FIRST_SENTINEL"); git(["-C", dir, "add", "."]); });
+    let payloads = [];
+    await withServer((req, res) => { let body = ""; req.on("data", chunk => body += chunk); req.on("end", () => { payloads.push(JSON.parse(body)); reply(res); }); }, async baseUrl => {
+      for (const state of [{}, { gitUnavailable: true }, { gitApiError: true }, { gitDisabled: true }]) {
+        const extension = load({ apiBaseUrl: baseUrl }, [repo(roots[0])], "unused", "en", { ...state, realGit: require("simple-git"), folders: [{ fsPath: roots[0] }] });
+        await extension.generateCommitMessage(repo(roots[1]));
+        assert.match(payloads.at(-1).messages[1].content, /SECOND_SENTINEL/);
+        assert.doesNotMatch(payloads.at(-1).messages[1].content, /FIRST_SENTINEL/);
+        assert.deepEqual(extension.observed.clipboard, ["fix: generated message"]);
+        const count = payloads.length;
+        await extension.generateCommitMessage(repo(path.join(root, "missing")));
+        assert.equal(payloads.length, count); assert.equal(extension.observed.errors.length, 1);
+      }
+    });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("reaudit: delayed self events do not invalidate a migrated snapshot", async () => {
+  const extension = load({ apiKey: "own-key" }, [], "diff", "en", { migrate: true, delayedSecretEvents: true });
+  await extension.ready;
+  const used = await extension.resolveCredentials("https://api.deepseek.com/v1");
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(await extension.startCredentialRequest(used, async () => "ok", new AbortController().signal), "ok");
+});
+
+test("reaudit: stored version-1 records do not require canonical JSON property order", async () => {
+  const extension = load(); await extension.ready;
+  const record = JSON.parse(boundKey(undefined, "key"));
+  await extension.secrets.store("aiCommit.apiKey", JSON.stringify({ endpoint: record.endpoint, key: record.key, version: 1 }, null, 2));
+  const used = await extension.resolveCredentials("https://api.deepseek.com/v1");
+  assert.equal(used.key, "key");
+  assert.equal(await extension.startCredentialRequest(used, async () => "ok", new AbortController().signal), "ok");
+});
+
+
+test("reaudit: shared change marker protects against stale SecretStorage caches", async () => {
+  const first = load({ apiKey: "*****" }, [], "diff", "en", { secureKey: "old" }); await first.ready;
+  const used = await first.resolveCredentials("https://api.deepseek.com/v1");
+  const cachedSecret = { value: used.raw };
+  const options = { secretValues: first.observed.secretValues, storageDir: first.storageDir, cachedSecret };
+  const stale = load({ apiKey: "*****" }, [], "diff", "en", options); await stale.ready;
+  const staleUsed = await stale.resolveCredentials("https://api.deepseek.com/v1");
+  await first.serializeKeyWrite(() => first.writeSecret(boundKey("https://other.example/v1", "old")));
+  let starts = 0;
+  const controller = new AbortController();
+  const pending = stale.startCredentialRequest(staleUsed, async () => { starts++; }, controller.signal);
+  const rejected = assert.rejects(pending, /changed/);
+  setTimeout(() => { cachedSecret.value = first.observed.secretValues.get("aiCommit.apiKey"); }, 100);
+  await rejected; assert.equal(starts, 0);
+  assert.equal(await stale.clearRejectedKey(staleUsed), false);
+  assert.equal(storedKey(first), "old");
+  const mark = fs.readFileSync(path.join(first.storageDir, "credentials.state"), "utf8");
+  assert.doesNotMatch(mark, /other.example|https|old/);
+});
+
+
+test("reaudit: delayed own storage cache cannot publish an old digest while masking", async () => {
+  const cachedSecret = { value: undefined };
+  const extension = load({}, [], "diff", "en", { cachedSecret, cacheDelay: 80, input: "new-key" });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.setApiKey")();
+  assert.equal(storedKey(extension), "new-key"); assert.equal(extension.observed.errors.length, 0);
+  const used = await extension.resolveCredentials("https://api.deepseek.com/v1");
+  assert.equal(used.key, "new-key");
+  await extension.observed.commands.get("ai-commit.clearApiKey")();
+  assert.equal(storedKey(extension), undefined); assert.equal(extension.observed.errors.length, 0);
+  await extension.serializeKeyWrite(async () => {});
 });

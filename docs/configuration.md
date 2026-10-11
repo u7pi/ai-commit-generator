@@ -46,7 +46,7 @@ An existing key requires **Allow and bind to this endpoint** before sending it t
 
 When no secure key exists, the first use of plaintext offers **Migrate and mask** or **Use plaintext this window, without migrating**, showing the destination. The latter explicitly authorizes only that key and endpoint for the current window. Dismissing the dialog sends nothing. On an already bound endpoint, a new plaintext value replaces the stored key and is masked without another destination prompt. No staged changes means no key prompt.
 
-Migration retains `*****` in the effective user or workspace scope and deletes identical plaintext copies from other accessible user/current-workspace scopes. Different plaintext values are preserved with a warning. Storage failures abort generation and leave the old data intact; settings-update failures retain the secure record and explicitly report possible plaintext residue. Pending dialogs do not block key commands; changes to credentials or destination invalidate old operations, and writes/clears are serialized.
+Migration retains `*****` in the effective user or workspace scope and deletes identical plaintext copies from other accessible user/current-workspace scopes. Different plaintext values are preserved with a warning. Storage failures abort generation and leave the old data intact; settings-update failures retain the secure record and explicitly report possible plaintext residue. Pending dialogs do not block key commands; changes to credentials or destination invalidate old operations, and writes/clears are serialized. Updated local windows using the same profile and extension ID also share an exclusive `credentials.lock` in the extension global-storage directory. The lock covers credential/configuration writes and final snapshot validation plus request launch; user input and network waits do not hold it. Acquisition is cancellable and bounded to 5 seconds. SecretStorage change events invalidate prior authorization/snapshots; late 401 responses preserve replacement or rebound records. The version-1 storage format is unchanged. This guarantee excludes old extension versions, remote hosts and external writers.
 
 **Simple AI Committer: Clear Stored API Key** deletes the secure record and removes all accessible user/current-workspace `*****` masks. Remaining plaintext requires explicit authorization again. To send no Authorization header, also empty the effective settings key. Older extension versions cannot read the new record: after downgrading, set the key again.
 
@@ -83,3 +83,15 @@ Generate a Conventional Commit message from the diff. Always write the subject a
 ```
 
 An explicitly saved prompt from an older version is retained. Reset the setting to its default value in the Settings UI to return to the built-in language selection; the displayed English default counts as unset.
+
+## Safe diagnostics and lock recovery
+
+Non-2xx HTTP responses stop immediately at headers and report only a local message and status code; no provider error body is read, displayed or logged. HTTP 200 error objects also use a fixed message. Successful bodies retain the 1 MiB raw-byte limit. Connection testing keeps credentials even on 401; only generation clears matching rejected credentials.
+
+A lock is never reclaimed based on its age. If a window crashed and a later operation times out, close all related windows first, then delete only the `credentials.lock` at the exact path shown in the notification and reopen VS Code. Do not delete the storage directory.
+
+中文：非成功状态按响应头处理，不读取或展示服务端错误正文；成功响应仍限制 1 MiB。生成的 401 只清理匹配的凭据快照，连接测试仅诊断。相同配置与扩展 ID 的已更新并 Reload 的本地窗口共享短时写锁，最多等待 5 秒；确认和网络等待不持锁。不同版本、远程宿主和外部写入不在保证范围内。异常退出留下锁时，先关闭相关窗口，再删除通知给出的准确 `credentials.lock` 文件，不删除存储目录。
+
+Shared state uses a random change identifier and credential digest to detect stale SecretStorage caches before writes or requests; it stores no plaintext key or endpoint. If storage was changed by an older version or external tool, synchronization can stop with an explicit error. After closing all related windows, remove only the reported lock and the adjacent `credentials.state` to reset coordination, then reopen and check the key.
+
+中文：共享状态使用随机变更标识及记录摘要识别 SecretStorage 旧缓存，不保存明文密钥或地址。旧版本或外部程序绕过锁修改存储后，可能出现同步错误；先关闭相关窗口，再删除指定锁及相邻的 `credentials.state` 重置协调状态，重开并检查密钥。

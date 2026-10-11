@@ -2,7 +2,9 @@ import * as vscode from "vscode";
 import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
-import { isAbsolute, relative } from "path";
+import { isAbsolute, relative, join } from "path";
+import { promises as fs } from "fs";
+import { randomBytes, createHash } from "crypto";
 import { simpleGit, DiffResult } from "simple-git";
 
 // ─── Logger ─────────────────────────────────────────────────────────────────
@@ -164,14 +166,102 @@ let secrets: vscode.SecretStorage;
 let extensionId = "";
 let keyRevision = 0;
 let keyWrites: Promise<unknown> = Promise.resolve();
-let migration: { signature: string; promise: Promise<string> } | undefined;
+let migration: { signature: string; promise: Promise<RequestCredentials> } | undefined;
 let plaintextAuthorization: { key: string; endpoint: string } | undefined;
 // Settings removed by the clear-all command; keep in sync with the manifest.
 const CLEARABLE_SETTINGS = ["apiBaseUrl", "apiKey", "model", "systemPrompt", "maxDiffChars", "temperature", "timeoutMs", "gitPath"] as const;
 let clearingAllData = false;
+let clearGeneration = 0;
+let knownSecretRaw: string | undefined;
+let secretObserved = false;
+let storageDirectory: string;
 
-function serializeKeyWrite<T>(work: () => Promise<T>): Promise<T> {
-  const result = keyWrites.then(work);
+async function sharedCredentialState(): Promise<string | undefined> {
+  try { return await fs.readFile(join(storageDirectory, "credentials.state"), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(t("无法读取共享凭据状态。", "Could not read shared credential state."));
+  }
+}
+
+function credentialDigest(raw: string | undefined): string {
+  return createHash("sha256").update(raw ?? "").digest("hex");
+}
+
+async function markCredentialChange(raw: string | undefined): Promise<void> {
+  const target = join(storageDirectory, "credentials.state");
+  const temporary = target + "." + randomBytes(16).toString("hex");
+  try {
+    await fs.writeFile(temporary, JSON.stringify({ id: randomBytes(16).toString("hex"), digest: credentialDigest(raw) }), { flag: "wx" });
+    await fs.rename(temporary, target);
+  } catch {
+    throw new Error(t("无法保存共享凭据状态，操作已停止。", "Could not save shared credential state; the operation was stopped."));
+  } finally {
+    await fs.unlink(temporary).catch(() => {});
+  }
+}
+
+async function synchronizeCredentialCache(signal?: AbortSignal): Promise<void> {
+  const state = await sharedCredentialState();
+  if (!state) return;
+  let digest: string;
+  try {
+    digest = JSON.parse(state).digest;
+    if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error();
+  } catch { throw new Error(t("共享凭据状态无效，请检查扩展存储目录。", "Invalid shared credential state. Check the extension storage directory.")); }
+  const deadline = Date.now() + 5000;
+  while (true) {
+    if (signal?.aborted) throw abortError();
+    let raw: string | undefined;
+    try { raw = await secrets.get(API_KEY); }
+    catch { throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key.")); }
+    if (credentialDigest(raw) === digest) { observeSecret(raw); return; }
+    if (Date.now() >= deadline) throw new Error(t("跨窗口凭据缓存尚未同步，请稍后重试。", "Cross-window credential cache has not synchronized. Retry shortly."));
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+}
+
+// Cooperating local windows share this lock; never hold it during a dialog or network wait.
+async function withCredentialLock<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const lockPath = join(storageDirectory, "credentials.lock");
+  await fs.mkdir(storageDirectory, { recursive: true });
+  const deadline = Date.now() + 5000;
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  while (true) {
+    if (signal?.aborted) throw abortError();
+    try {
+      handle = await fs.open(lockPath, "wx");
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new Error(t("无法创建凭据写锁，请检查扩展存储目录权限。", "Could not create the credential lock. Check extension storage permissions."));
+      }
+      if (Date.now() >= deadline) throw new Error(t(
+        `凭据写锁等待超时。若相关窗口已关闭，请删除残留锁文件：${lockPath}`,
+        `Credential lock timed out. After closing related windows, remove the leftover lock file: ${lockPath}`,
+      ));
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => { signal?.removeEventListener("abort", cancel); resolve(); };
+        const timer = setTimeout(finish, Math.min(50, deadline - Date.now()));
+        const cancel = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); reject(abortError()); };
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+      });
+    }
+  }
+  try {
+    await handle.writeFile(`${process.pid}:${randomBytes(16).toString("hex")}`);
+    if (signal?.aborted) throw abortError();
+    await synchronizeCredentialCache(signal);
+    return await work();
+  } finally {
+    await handle.close();
+    await fs.unlink(lockPath);
+  }
+}
+
+function serializeKeyWrite<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const result = keyWrites.then(() => withCredentialLock(work, signal));
   keyWrites = result.catch(() => {});
   return result;
 }
@@ -191,6 +281,31 @@ function destinationLabel(baseUrl: string, key = ""): string {
   return key ? label.split(key).join("[redacted]") : label;
 }
 
+function observeSecret(raw: string | undefined) {
+  if (secretObserved && raw !== knownSecretRaw) {
+    plaintextAuthorization = undefined;
+  }
+  knownSecretRaw = raw;
+  secretObserved = true;
+}
+
+async function writeSecret(raw: string | undefined): Promise<void> {
+  const previous = knownSecretRaw;
+  await markCredentialChange(raw);
+  // Events may arrive after store/delete resolves. Recognize our resulting value.
+  knownSecretRaw = raw;
+  secretObserved = true;
+  try {
+    if (raw === undefined) await secrets.delete(API_KEY);
+    else await secrets.store(API_KEY, raw);
+  } catch (error) {
+    knownSecretRaw = previous;
+    await markCredentialChange(previous);
+    throw error;
+  }
+  await synchronizeCredentialCache();
+}
+
 async function readStoredKey(): Promise<{ raw: string | undefined; key: string; endpoint?: string }> {
   let raw: string | undefined;
   try {
@@ -198,6 +313,7 @@ async function readStoredKey(): Promise<{ raw: string | undefined; key: string; 
   } catch {
     throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
   }
+  observeSecret(raw);
   if (!raw) return { raw, key: "" };
   let record: any;
   try {
@@ -217,30 +333,46 @@ function keySettingTarget(config: vscode.WorkspaceConfiguration): vscode.Configu
     ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
 }
 
+async function updateCredentialConfig(config: vscode.WorkspaceConfiguration, key: string, value: unknown, target: vscode.ConfigurationTarget): Promise<void> {
+  await markCredentialChange((await readStoredKey()).raw);
+  await config.update(key, value, target);
+}
+
 async function writeMaskedKey(config: vscode.WorkspaceConfiguration, key: string): Promise<void> {
-  const inspected = config.inspect<string>("apiKey");
+  const expected = await readStoredKey();
+  if (expected.key !== key) throw credentialsChanged();
   const target = keySettingTarget(config);
   let failed = false;
   try {
-    if (config.get<string>("apiKey", "") !== MASKED_KEY) await config.update("apiKey", MASKED_KEY, target);
+    if (config.get<string>("apiKey", "") !== MASKED_KEY) await updateCredentialConfig(config, "apiKey", MASKED_KEY, target);
   } catch {
     failed = true;
   }
   let otherPlaintext = false;
-  for (const [scope, value] of [
-    [vscode.ConfigurationTarget.Global, inspected?.globalValue],
-    [vscode.ConfigurationTarget.Workspace, inspected?.workspaceValue],
-  ] as const) {
+  for (const scope of [vscode.ConfigurationTarget.Global, vscode.ConfigurationTarget.Workspace]) {
+    const fresh = vscode.workspace.getConfiguration("aiCommit").inspect<string>("apiKey");
+    const value = scope === vscode.ConfigurationTarget.Global ? fresh?.globalValue : fresh?.workspaceValue;
     if (scope === target || !value?.trim() || value.trim() === MASKED_KEY) continue;
     if (value.trim() !== key) {
       otherPlaintext = true;
       continue;
     }
     try {
-      await config.update("apiKey", undefined, scope);
+      await updateCredentialConfig(config, "apiKey", undefined, scope);
     } catch {
       failed = true;
     }
+  }
+  if ((await readStoredKey()).raw !== expected.raw) {
+    // External writers may bypass our lock. Remove only masks, preserving new plaintext.
+    if (!(await readStoredKey()).key) {
+      for (const scope of [vscode.ConfigurationTarget.Global, vscode.ConfigurationTarget.Workspace]) {
+        const fresh = vscode.workspace.getConfiguration("aiCommit").inspect<string>("apiKey");
+        const value = scope === vscode.ConfigurationTarget.Global ? fresh?.globalValue : fresh?.workspaceValue;
+        if (value === MASKED_KEY) await updateCredentialConfig(config, "apiKey", undefined, scope);
+      }
+    }
+    throw credentialsChanged();
   }
   if (failed) {
     vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置掩码或同值明文副本未能更新，请检查用户和工作区设置。", "AI Commit: Key saved securely, but masking or plaintext-copy cleanup failed. Check user and workspace settings."));
@@ -266,25 +398,51 @@ async function restoreStoredKeyMask(): Promise<void> {
   }
 }
 
-interface RequestCredentials { key: string; endpoint: string; raw: string | undefined; setting: string; revision: number; }
+interface RequestCredentials {
+  key: string; source: "stored" | "plaintext" | "none"; endpoint: string;
+  raw: string | undefined; setting: string; revision: number; sharedState: string | undefined;
+}
+
+async function checkCredentials(used: RequestCredentials, signal?: AbortSignal): Promise<void> {
+  const stored = await readStoredKey();
+  const setting = vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "");
+  if (signal?.aborted) throw abortError();
+  if (used.sharedState !== await sharedCredentialState() || used.revision !== keyRevision || stored.raw !== used.raw ||
+      currentEndpoint() !== used.endpoint || setting !== used.setting ||
+      (used.source === "plaintext" && (plaintextAuthorization?.key !== used.key || plaintextAuthorization.endpoint !== used.endpoint))) {
+    throw credentialsChanged();
+  }
+}
+
+async function startCredentialRequest<T>(used: RequestCredentials, start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  const launched = await serializeKeyWrite(async () => {
+    await checkCredentials(used, signal);
+    // Return a container, so the lock releases without awaiting the HTTP response.
+    const response = start();
+    response.catch(() => {}); // It can reject while asynchronous lock release is still pending.
+    return { response };
+  }, signal);
+  return launched.response;
+}
 
 async function clearRejectedKey(used: RequestCredentials): Promise<boolean> {
   return serializeKeyWrite(async () => {
     const stored = await readStoredKey();
     const config = vscode.workspace.getConfiguration("aiCommit");
-    if (!used.key || keyRevision !== used.revision || stored.raw !== used.raw ||
-        currentEndpoint() !== used.endpoint || config.get<string>("apiKey", "").trim() !== used.setting) return false;
+    if (!used.key || used.sharedState !== await sharedCredentialState() || keyRevision !== used.revision || stored.raw !== used.raw ||
+        (stored.key && stored.key !== used.key) ||
+        currentEndpoint() !== used.endpoint || config.get<string>("apiKey", "") !== used.setting) return false;
     const cleanupRevision = ++keyRevision;
     plaintextAuthorization = undefined;
     if (stored.key) {
       try {
-        await secrets.delete(API_KEY);
+        await writeSecret(undefined);
       } catch {
         throw new Error(t("无法清除被拒绝的安全密钥，原密钥和掩码已保留，请手动清除。", "Could not clear the rejected stored key; the key and mask were retained. Clear it manually."));
       }
     }
     if (keyRevision !== cleanupRevision || currentEndpoint() !== used.endpoint ||
-        vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "").trim() !== used.setting) return false;
+        vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== used.setting) return false;
     const inspected = config.inspect<string>("apiKey");
     const target = keySettingTarget(config);
     const scopes = [
@@ -299,7 +457,7 @@ async function clearRejectedKey(used: RequestCredentials): Promise<boolean> {
       const value = (scope === vscode.ConfigurationTarget.Global ? fresh?.globalValue : fresh?.workspaceValue)?.trim();
       if (value !== MASKED_KEY && value !== used.key) continue;
       try {
-        await config.update("apiKey", otherKey && scope === target ? "" : undefined, scope);
+        await updateCredentialConfig(config, "apiKey", otherKey && scope === target ? "" : undefined, scope);
       } catch {
         failed = true;
       }
@@ -316,6 +474,7 @@ async function setApiKey() {
   const initialRevision = keyRevision;
   const setting = vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "");
   let stored: string | undefined;
+  let initialSharedState: string | undefined;
   try {
     await keyWrites;
     try {
@@ -323,6 +482,7 @@ async function setApiKey() {
     } catch {
       throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
     }
+    initialSharedState = await sharedCredentialState();
     endpoint = currentEndpoint();
     label = destinationLabel(vscode.workspace.getConfiguration("aiCommit").get<string>("apiBaseUrl", "https://api.deepseek.com/v1"));
   } catch (err) {
@@ -344,12 +504,12 @@ async function setApiKey() {
       } catch {
         throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
       }
-      if (initialRevision !== keyRevision || currentEndpoint() !== endpoint || current !== stored ||
+      if (initialSharedState !== await sharedCredentialState() || initialRevision !== keyRevision || currentEndpoint() !== endpoint || current !== stored ||
           vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting) throw credentialsChanged();
       const revision = ++keyRevision;
       plaintextAuthorization = undefined;
       try {
-        await secrets.store(API_KEY, JSON.stringify({ version: 1, key: key.trim(), endpoint } satisfies KeyRecord));
+        await writeSecret(JSON.stringify({ version: 1, key: key.trim(), endpoint } satisfies KeyRecord));
       } catch {
         throw new Error(t("AI Commit：无法安全保存 API Key。", "AI Commit: Could not save the API key securely."));
       }
@@ -376,7 +536,7 @@ async function clearApiKey() {
   try {
     await serializeKeyWrite(async () => {
       try {
-        await secrets.delete(API_KEY);
+        await writeSecret(undefined);
       } catch {
         throw new Error(t("AI Commit：无法清除安全存储中的 API Key。", "AI Commit: Could not clear the stored API key."));
       }
@@ -389,7 +549,7 @@ async function clearApiKey() {
       ] as const) {
         if (value?.trim() !== MASKED_KEY) continue;
         try {
-          await config.update("apiKey", undefined, scope);
+          await updateCredentialConfig(config, "apiKey", undefined, scope);
         } catch {
           failed = true;
         }
@@ -443,13 +603,14 @@ async function clearAllData() {
     return;
   }
   clearingAllData = true;
+  ++clearGeneration;
   ++keyRevision;
   plaintextAuthorization = undefined;
   try {
     const failures = await serializeKeyWrite(async (): Promise<string[]> => {
       const failures: string[] = [];
       try {
-        await secrets.delete(API_KEY);
+        await writeSecret(undefined);
       } catch {
         failures.push(t("安全存储 / API Key", "Secure storage / API Key"));
       }
@@ -457,7 +618,7 @@ async function clearAllData() {
       for (const key of CLEARABLE_SETTINGS) {
         for (const scope of scopes) {
           try {
-            await vscode.workspace.getConfiguration("aiCommit").update(key, undefined, scope.target);
+            await updateCredentialConfig(vscode.workspace.getConfiguration("aiCommit"), key, undefined, scope.target);
           } catch {
             failures.push(`${scope.label} / ${key}`);
           }
@@ -481,23 +642,27 @@ function credentialsChanged(): Error {
   return new Error(t("API Key 或接口地址已变更，请重新生成。", "The API key or endpoint changed. Generate again."));
 }
 
-async function getApiKey(baseUrl: string): Promise<string> {
-  const revision = keyRevision;
+async function getApiKey(baseUrl: string): Promise<RequestCredentials> {
   await keyWrites;
+  const revision = keyRevision;
   const stored = await readStoredKey();
+  const initialSharedState = await sharedCredentialState();
   const config = vscode.workspace.getConfiguration("aiCommit");
   const setting = config.get<string>("apiKey", "");
   const plaintext = setting.trim() === MASKED_KEY ? "" : setting.trim();
   const key = plaintext || stored.key;
-  if (!key) return "";
   const endpoint = apiEndpoint(baseUrl);
+  const snapshot = async (raw: string | undefined, source: RequestCredentials["source"]): Promise<RequestCredentials> => ({
+    key, source, endpoint, raw, setting: vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", ""), revision: keyRevision, sharedState: await sharedCredentialState(),
+  });
   const check = async () => {
     const current = await readStoredKey();
-    if (revision !== keyRevision || currentEndpoint() !== endpoint ||
+    if (initialSharedState !== await sharedCredentialState() || revision !== keyRevision || currentEndpoint() !== endpoint ||
         vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting || current.raw !== stored.raw) {
       throw credentialsChanged();
     }
   };
+  if (!key) return serializeKeyWrite(async () => { await check(); return snapshot(stored.raw, "none"); });
   const signature = JSON.stringify([revision, stored.raw, setting, endpoint]);
   if (migration?.signature === signature) return migration.promise;
   const operation = (async () => {
@@ -528,13 +693,13 @@ async function getApiKey(baseUrl: string): Promise<string> {
       let operationRevision = revision;
       if (!persist) {
         plaintextAuthorization = { key, endpoint };
-        return key;
+        return snapshot(stored.raw, "plaintext");
       }
       if (key !== stored.key || endpoint !== stored.endpoint) {
         const writeRevision = ++keyRevision;
         operationRevision = writeRevision;
         try {
-          await secrets.store(API_KEY, JSON.stringify({ version: 1, key, endpoint } satisfies KeyRecord));
+          await writeSecret(JSON.stringify({ version: 1, key, endpoint } satisfies KeyRecord));
         } catch {
           throw new Error(t("AI Commit：无法安全保存或绑定 API Key，原密钥及设置已保留。", "AI Commit: Could not securely save or bind the API key; the original key and settings were preserved."));
         }
@@ -544,9 +709,12 @@ async function getApiKey(baseUrl: string): Promise<string> {
           vscode.window.showInformationMessage(t("AI Commit：设置中的新 API Key 已更新安全存储。", "AI Commit: The new settings API key updated secure storage."));
         }
       }
+      const expectedRaw = key !== stored.key || endpoint !== stored.endpoint
+        ? JSON.stringify({ version: 1, key, endpoint } satisfies KeyRecord) : stored.raw;
       await writeMaskedKey(config, key);
-      if (operationRevision !== keyRevision || currentEndpoint() !== endpoint) throw credentialsChanged();
-      return key;
+      const final = await readStoredKey();
+      if (operationRevision !== keyRevision || currentEndpoint() !== endpoint || final.raw !== expectedRaw) throw credentialsChanged();
+      return snapshot(final.raw, "stored");
     });
   })();
   migration = { signature, promise: operation };
@@ -572,6 +740,7 @@ function getApiUrl(baseUrl: string): URL {
 
 async function selectApiBaseUrl() {
   if (clearingInProgress()) return;
+  const generation = clearGeneration;
   const presets = [
     { label: "OpenAI", url: "https://api.openai.com/v1" },
     { label: "Kimi", url: "https://api.moonshot.cn/v1" },
@@ -609,14 +778,17 @@ async function selectApiBaseUrl() {
     });
     picker.show();
   });
-  if (url !== undefined) {
-    const config = vscode.workspace.getConfiguration("aiCommit");
-    const target = config.inspect<string>("apiBaseUrl")?.workspaceValue !== undefined
-      ? vscode.ConfigurationTarget.Workspace
-      : vscode.ConfigurationTarget.Global;
-    await config.update(
-      "apiBaseUrl", url, target,
-    );
+  if (url !== undefined && generation === clearGeneration && !clearingAllData) {
+    await serializeKeyWrite(async () => {
+      if (generation !== clearGeneration || clearingAllData) return;
+      const config = vscode.workspace.getConfiguration("aiCommit");
+      const target = config.inspect<string>("apiBaseUrl")?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await updateCredentialConfig(config,
+        "apiBaseUrl", url, target,
+      );
+    });
   }
 }
 
@@ -710,11 +882,11 @@ async function testConnection() {
     if (choice) await vscode.commands.executeCommand("workbench.action.openSettings", openSettingsQuery());
     return;
   }
-  let apiKey: string;
+  let credentials: RequestCredentials;
   try {
     // Key resolution may ask for migration or endpoint approval; keep those
     // dialogs before the progress notification so they stay visible.
-    apiKey = await getApiKey(config.apiBaseUrl);
+    credentials = await getApiKey(config.apiBaseUrl);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return;
     const setKey = t("设置 API Key", "Set API Key");
@@ -732,7 +904,7 @@ async function testConnection() {
   try {
     result = await withGenerationProgress(
       t("Simple AI Committer：正在测试 API 连接…", "Simple AI Committer: Testing API connection…"),
-      (signal) => pingApi(config.apiBaseUrl, apiKey, config.model, config.temperature, config.timeoutMs, signal),
+      (signal) => startCredentialRequest(credentials, () => pingApi(config.apiBaseUrl, credentials.key, config.model, config.temperature, config.timeoutMs, signal), signal),
     );
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return;
@@ -769,6 +941,7 @@ async function getRepo(arg?: any): Promise<any> {
         return repo;
       }
     }
+    return null;
   }
   return api.repositories?.[0] ?? null;
 }
@@ -830,9 +1003,14 @@ function requestTimeoutError(): Error {
   return error;
 }
 
-// Shared OpenAI-compatible chat-completions POST. Resolves with the parsed
-// JSON body for 2xx responses; rejects with a redacted error that carries
-// `statusCode` for non-2xx responses.
+function networkError(error: NodeJS.ErrnoException): Error {
+  const code = typeof error.code === "string" && /^[A-Z][A-Z0-9_]{0,50}$/.test(error.code) ? error.code : undefined;
+  const safe = new Error(t("API 网络请求失败", "API network request failed") + (code ? ` (${code})` : ".")) as Error & { code?: string };
+  safe.code = code;
+  return safe;
+}
+
+// Shared OpenAI-compatible POST. HTTP failures are local errors with statusCode.
 function postChatCompletion(
   baseUrl: string,
   apiKey: string,
@@ -861,16 +1039,6 @@ function postChatCompletion(
 
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const sensitiveValues = [apiKey, ...parsedUrl.searchParams.values()].filter(Boolean);
-    const redact = (text: string) => {
-      for (const value of sensitiveValues) {
-        const encoded = encodeURIComponent(value);
-        for (const candidate of new Set([value, encoded, encoded.replace(/%20/g, "+")])) {
-          text = text.split(candidate).join("[redacted]");
-        }
-      }
-      return text;
-    };
     const finish = (error?: Error, json?: any) => {
       if (settled) return;
       settled = true;
@@ -878,18 +1046,7 @@ function postChatCompletion(
       signal?.removeEventListener("abort", onAbort);
       if (error) {
         req.destroy();
-        const statusCode = (error as Error & { statusCode?: number }).statusCode;
-        const code = (error as { code?: string }).code;
-        const safeMessage = redact(error.message);
-        if (safeMessage !== error.message) {
-          const redacted = new Error(safeMessage) as Error & { statusCode?: number; code?: string };
-          redacted.name = error.name;
-          redacted.statusCode = statusCode;
-          redacted.code = code;
-          reject(redacted);
-        } else {
-          reject(error);
-        }
+        reject(error);
       } else {
         resolve(json);
       }
@@ -897,6 +1054,14 @@ function postChatCompletion(
     const onAbort = () => finish(abortError());
     const transport = parsedUrl.protocol === "https:" ? https : http;
     const req = transport.request(options, (res) => {
+      res.on("error", (err) => finish(networkError(err)));
+      if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode > 299) {
+        const error = new Error(t(`API 请求失败（${res.statusCode ?? "unknown"}）。`, `API request failed (${res.statusCode ?? "unknown"}).`)) as Error & { statusCode?: number };
+        error.statusCode = res.statusCode;
+        finish(error);
+        res.destroy();
+        return;
+      }
       let receivedBytes = 0;
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => {
@@ -909,41 +1074,23 @@ function postChatCompletion(
         }
         chunks.push(chunk);
       });
-      res.on("error", (err) => finish(err));
-      res.on("aborted", () => finish(new Error("API response aborted")));
-      if (
-        res.statusCode === undefined ||
-        res.statusCode < 200 ||
-        res.statusCode > 299
-      ) {
-        res.on("end", () => {
-          if (settled) return;
-          const errBody = Buffer.concat(chunks).toString("utf8");
-          const error = new Error(
-            `API request failed (${res.statusCode}): ${redact(errBody).slice(0, 300)}`,
-          ) as Error & { statusCode?: number };
-          error.statusCode = res.statusCode;
-          finish(error);
-        });
-        return;
-      }
-
+      res.on("aborted", () => finish(new Error(t("API 响应中断。", "API response aborted."))));
       res.on("end", () => {
         if (settled) return;
         try {
           const json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           if (json.error) {
-            finish(new Error(redact(String(json.error.message || JSON.stringify(json.error)))));
+            finish(new Error(t("API 返回错误结果。", "API returned an error result.")));
             return;
           }
           finish(undefined, json);
         } catch (e) {
-          finish(new Error("Failed to parse API response"));
+          finish(new Error(t("无法解析 API 响应。", "Failed to parse API response.")));
         }
       });
     });
 
-    req.on("error", (err) => finish(err));
+    req.on("error", (err) => finish(networkError(err)));
     timer = setTimeout(() => finish(requestTimeoutError()), timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
     req.end(body);
@@ -1082,7 +1229,7 @@ async function generateCommitMessage(arg?: any) {
   if (clearingInProgress()) return;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   const repo = await getRepo(arg);
-  const rootPath = repo?.rootUri.fsPath ?? workspaceRoot;
+  const rootPath = arg?.rootUri ? arg.rootUri.fsPath : repo?.rootUri.fsPath ?? workspaceRoot;
   if (!rootPath) {
     vscode.window.showErrorMessage(t("AI Commit：未打开工作区文件夹。", "AI Commit: No workspace folder open."));
     return;
@@ -1131,8 +1278,8 @@ async function generateCommitMessage(arg?: any) {
     }
 
     const config = getConfig();
-    const apiKey = await getApiKey(config.apiBaseUrl);
-    const revision = keyRevision;
+    requestCredentials = await getApiKey(config.apiBaseUrl);
+    const credentials = requestCredentials;
     await withGenerationProgress(
       t("Simple AI Committer：正在生成提交信息…", "Simple AI Committer: Generating commit message…"),
       async (signal) => {
@@ -1145,16 +1292,10 @@ async function generateCommitMessage(arg?: any) {
           return;
         }
         if (signal.aborted) throw abortError();
-        const stored = await readStoredKey();
-        const setting = vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "").trim();
-        const currentKey = (setting === MASKED_KEY ? "" : setting) || stored.key;
-        if (signal.aborted) throw abortError();
-        if (revision !== keyRevision || currentKey !== apiKey || currentEndpoint() !== apiEndpoint(config.apiBaseUrl)) throw credentialsChanged();
-        requestCredentials = { key: apiKey, endpoint: apiEndpoint(config.apiBaseUrl), raw: stored.raw, setting, revision };
-        const message = await callLLM(
-          config.apiBaseUrl, apiKey, config.model, config.systemPrompt,
+        const message = await startCredentialRequest(credentials, () => callLLM(
+          config.apiBaseUrl, credentials.key, config.model, config.systemPrompt,
           config.temperature, truncateDiff(rawDiff, config.maxDiffChars, summary), config.timeoutMs, signal,
-        );
+        ), signal);
         if (signal.aborted) throw abortError();
         if (await getDiffStaged(rootPath, signal) !== rawDiff) {
           stagedChangesChanged();
@@ -1200,7 +1341,7 @@ async function generateCommitMessage(arg?: any) {
     return;
   }
   const msg = failure instanceof Error ? failure.message : String(failure);
-  Logger.error("Failed to generate commit message: " + msg, failure);
+  Logger.error("Generation failed" + (statusCode ? ` (HTTP ${statusCode})` : ""));
   vscode.window.showErrorMessage(t("AI Commit：" + msg, "AI Commit: " + msg));
 }
 
@@ -1208,6 +1349,13 @@ async function generateCommitMessage(arg?: any) {
 
 export function activate(context: vscode.ExtensionContext) {
   secrets = context.secrets;
+  storageDirectory = context.globalStorageUri.fsPath;
+  context.subscriptions.push(secrets.onDidChange(event => {
+    if (event.key === API_KEY) {
+      // Re-read rather than treating delayed self events as new mutations.
+      void secrets.get(API_KEY).then(observeSecret, () => {});
+    }
+  }));
   extensionId = context.extension?.id ?? "";
   ConfigManager.getInstance(); // 初始化配置监听
   context.subscriptions.push(
