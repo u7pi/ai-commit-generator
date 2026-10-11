@@ -38,6 +38,10 @@
         "icon": "$(wand)"
       },
       {
+        "command": "ai-commit.testConnection",
+        "title": "%command.testConnection.title%"
+      },
+      {
         "command": "ai-commit.selectApiBaseUrl",
         "title": "%command.selectApiBaseUrl.title%"
       },
@@ -69,16 +73,19 @@
         "aiCommit.apiBaseUrl": {
           "type": "string",
           "default": "https://api.deepseek.com/v1",
+          "order": 1,
           "description": "%config.apiBaseUrl.description%"
         },
         "aiCommit.apiKey": {
           "type": "string",
           "default": "",
+          "order": 2,
           "description": "%config.apiKey.description%"
         },
         "aiCommit.model": {
           "type": "string",
           "default": "deepseek-flash",
+          "order": 3,
           "description": "%config.model.description%"
         },
         "aiCommit.systemPrompt": {

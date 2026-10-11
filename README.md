@@ -12,6 +12,7 @@ A simple, practical way to generate Git commit messages from **staged changes** 
 - Use English interface text and built-in prompts by default. With the Simplified Chinese (`zh-cn`) VS Code display language, use Chinese text and prompts.
 - Customize `aiCommit.systemPrompt` to match your team's commit format and preferred output language.
 - Connect to an OpenAI-compatible Chat Completions endpoint, including OpenAI, DeepSeek, Kimi, GLM, or local Ollama.
+- Verify the setup after configuring with **Simple AI Committer: Test API Connection**: it reports the responding model and latency, or maps 401/403, 404, 400, 429, timeouts, DNS, and refused connections to corrective guidance with actionable buttons.
 - Include file summaries for long diffs within a strict character budget, and cancel generation from its notification.
 - Preserve edited drafts, discard results for changed staged content, and allow only one generation task per repository.
 - Store a single API key securely with its bound endpoint; confirm legacy upgrades and changes of destination.
@@ -35,7 +36,7 @@ code --install-extension simple-ai-committer-0.3.2.vsix
 
 ## Usage
 
-1. Configure your API base URL and model. Enter the API key in Settings (`aiCommit.apiKey`) or run **Simple AI Committer: Set API Key** if authentication is required.
+1. Configure your API base URL and model. Enter the API key in Settings (`aiCommit.apiKey`) or run **Simple AI Committer: Set API Key** if authentication is required. Run **Simple AI Committer: Test API Connection** to verify the setup — errors explain what to fix and offer **Set API Key**, **Select API Base URL**, or **Open Settings**.
 2. Stage changes in Source Control using the `+` button or `git add`.
 3. Click the wand button in the Source Control title bar, or run **Simple AI Committer: Generate Commit Message from Staged Changes** from the Command Palette.
 4. Review and edit the generated message in the Source Control input box.
@@ -73,11 +74,11 @@ Licensed under [MIT](./LICENSE).
 
 本扩展读取**已暂存**的 diff，使用兼容 OpenAI Chat Completions 的模型生成提交信息并填入源代码管理输入框。不会自动暂存或提交；没有已暂存更改时不调用 AI。
 
-1. 在设置中搜索 `aiCommit`，配置 API 地址和模型；需要认证时直接在设置中输入 API Key（`aiCommit.apiKey`），或运行“Simple AI Committer：设置 API Key”。
+1. 在设置中搜索 `aiCommit`，配置 API 地址和模型；需要认证时直接在设置中输入 API Key（`aiCommit.apiKey`），或运行“Simple AI Committer：设置 API Key”。配置后可运行“Simple AI Committer：测试 API 连接”验证设置是否正常，报错会给出对应修正引导（设置 Key／选择地址／打开设置）。
 2. 手动暂存更改，点击源代码管理标题栏的魔杖按钮，或运行“Simple AI Committer：根据已暂存的更改生成提交信息”。
 3. 审查生成的提交信息后再提交。
 
-运行“Simple AI Committer：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。
+运行“Simple AI Committer：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。设置界面中 API 地址、API Key、模型固定显示在前三位。
 
 默认地址为 `https://api.deepseek.com/v1`，默认模型为 `deepseek-flash`；已有显式地址和模型配置保留。单个密钥与实际请求地址一起保存到 VS Code SecretStorage，且不跨机器同步。协议、主机、端口、路径或查询参数变化后，必须确认才能发送已有密钥；旧格式密钥首次使用也需确认绑定，无需重新输入。确认界面隐藏查询值，取消或关闭即终止生成。“设置 API Key”的密码输入框会显示当前目标地址。
 

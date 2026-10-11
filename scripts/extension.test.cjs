@@ -11,7 +11,7 @@ const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS };",
+  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, testConnection, DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
@@ -90,7 +90,11 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
         if (typeof options.migrate === "function") return options.migrate(items);
         return options.migrate ? items[0] : undefined;
       },
-      showInformationMessage: async (message) => { observed.infos.push(message); },
+      showInformationMessage: async (message, ...items) => {
+        observed.infos.push(message);
+        if (typeof options.infoAction === "function") return options.infoAction(items);
+        return undefined;
+      },
       showInputBox: async (inputOptions) => { observed.inputOptions.push(inputOptions); return typeof options.input === "function" ? options.input(inputOptions) : options.input; },
       withProgress: async (options, callback) => {
         const events = new EventEmitter();
@@ -216,6 +220,9 @@ test("manifest translations cover every referenced key and use matching key sets
   assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(props).map((key) => key.slice(key.indexOf(".") + 1)).sort());
   assert.equal(prop("systemPrompt").default, DEFAULT_SYSTEM_PROMPT_EN);
   assert.equal(prop("apiBaseUrl").default, "https://api.deepseek.com/v1");
+  assert.equal(prop("apiBaseUrl").order, 1);
+  assert.equal(prop("apiKey").order, 2);
+  assert.equal(prop("model").order, 3);
   assert.ok(manifest.activationEvents.includes("onStartupFinished"));
   assert.equal(prop("apiKey").markdownDeprecationMessage, undefined);
   assert.ok(!JSON.stringify(manifest.contributes.menus).includes("clearAllData"));
@@ -1738,4 +1745,174 @@ test("clear all data command is registered and localized", async () => {
   await zh.ready;
   await zh.observed.commands.get("ai-commit.clearAllData")();
   assert.ok(zh.observed.warnings.some((message) => message.includes("删除 Simple AI Committer 的全部 8 项配置")));
+});
+
+test("connection test sends a minimal probe and reports the responding model", async () => {
+  const payloads = [];
+  const headers = [];
+  await withServer((req, res) => {
+    headers.push(req.headers.authorization);
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      payloads.push(JSON.parse(body));
+      res.end(JSON.stringify({ model: "server-reported-model", choices: [{ message: { content: "p" } }] }));
+    });
+  }, async (baseUrl) => {
+    for (const language of ["en", "zh-cn"]) {
+      const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****", model: "configured-model" }, [], "diff", language, { secureKey: "probe-key" });
+      await extension.observed.commands.get("ai-commit.testConnection")();
+      assert.equal(extension.observed.errors.length, 0);
+      assert.match(extension.observed.infos[0], language === "zh-cn" ? /连接测试成功/ : /Connection test succeeded/);
+      assert.match(extension.observed.infos[0], /server-reported-model/);
+      assert.match(extension.observed.infos[0], language === "zh-cn" ? /\d+ 毫秒/ : /\d+ ms/);
+      assert.equal(extension.observed.progress.length, 1);
+      assert.equal(extension.observed.progress[0].options.cancellable, true);
+      assert.ok(extension.observed.progress[0].closed);
+    }
+    assert.equal(payloads.length, 2);
+    assert.deepEqual(headers, ["Bearer probe-key", "Bearer probe-key"]);
+    for (const payload of payloads) {
+      assert.equal(payload.model, "configured-model");
+      assert.equal(payload.max_tokens, 1);
+      assert.deepEqual(payload.messages, [{ role: "user", content: "ping" }]);
+    }
+  });
+});
+
+test("connection test maps 401 and 403 to key guidance with a Set API Key action", async () => {
+  for (const language of ["en", "zh-cn"]) {
+    for (const status of [401, 403]) {
+      await withServer((_req, res) => { res.writeHead(status); res.end("Invalid Authentication"); }, async (baseUrl) => {
+        const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****" }, [], "diff", language, {
+          secureKey: "some-key", errorAction: (items) => items[0],
+        });
+        await extension.observed.commands.get("ai-commit.testConnection")();
+        assert.equal(extension.observed.errors.length, 1);
+        assert.match(extension.observed.errors[0], new RegExp(String(status)));
+        if (language === "zh-cn") assert.match(extension.observed.errors[0], /[一-龥]/);
+        assert.ok(extension.observed.executed.includes("ai-commit.setApiKey"));
+        // A failed probe only diagnoses; it never deletes the stored key.
+        assert.ok(!extension.observed.secretOps.includes("delete"));
+        assert.equal(storedKey(extension), "some-key");
+      });
+    }
+  }
+});
+
+test("connection test maps 404 to a URL check with a picker action", async () => {
+  await withServer((_req, res) => { res.writeHead(404); res.end("not found"); }, async (baseUrl) => {
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****" }, [], "diff", "en", {
+      secureKey: "some-key", errorAction: (items) => items[0],
+    });
+    await extension.observed.commands.get("ai-commit.testConnection")();
+    assert.equal(extension.observed.errors.length, 1);
+    assert.match(extension.observed.errors[0], /404/);
+    assert.match(extension.observed.errors[0], /\/v1|chat\/completions/);
+    assert.ok(extension.observed.executed.includes("ai-commit.selectApiBaseUrl"));
+  });
+});
+
+test("connection test maps 400 to model and temperature guidance", async () => {
+  await withServer((_req, res) => {
+    res.writeHead(400);
+    res.end(JSON.stringify({ error: { message: "temperature is not supported" } }));
+  }, async (baseUrl) => {
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****", model: "no-such-model" }, [], "diff", "en", {
+      secureKey: "some-key", errorAction: (items) => items[0],
+    });
+    await extension.observed.commands.get("ai-commit.testConnection")();
+    assert.equal(extension.observed.errors.length, 1);
+    assert.match(extension.observed.errors[0], /400/);
+    assert.match(extension.observed.errors[0], /no-such-model/);
+    assert.match(extension.observed.errors[0], /temperature/i);
+    assert.ok(extension.observed.executed.includes("workbench.action.openSettings"));
+  });
+});
+
+test("connection test reports invalid local settings before any request", async () => {
+  let requests = 0;
+  await withServer((_req, res) => { requests++; res.end("{}"); }, async (baseUrl) => {
+    const invalidUrl = load({ apiBaseUrl: "not a url" }, [], "diff", "en", { errorAction: (items) => items[0] });
+    await invalidUrl.observed.commands.get("ai-commit.testConnection")();
+    assert.equal(invalidUrl.observed.errors.length, 1);
+    assert.match(invalidUrl.observed.errors[0], /http/i);
+    assert.ok(invalidUrl.observed.executed.includes("workbench.action.openSettings"));
+    assert.equal(invalidUrl.observed.progress.length, 0);
+    const numeric = load({ apiBaseUrl: baseUrl, timeoutMs: 0 }, [], "diff", "en");
+    await numeric.observed.commands.get("ai-commit.testConnection")();
+    assert.match(numeric.observed.errors[0], /timeoutMs/);
+    assert.equal(numeric.observed.progress.length, 0);
+    assert.equal(requests, 0);
+  });
+});
+
+test("connection test without a key points to Set API Key", async () => {
+  for (const language of ["en", "zh-cn"]) {
+    const extension = load({}, [], "diff", language, { migrate: true });
+    await extension.observed.commands.get("ai-commit.testConnection")();
+    assert.equal(extension.observed.warnings.length, 1);
+    assert.match(extension.observed.warnings[0], /API Key/);
+    assert.ok(extension.observed.executed.includes("ai-commit.setApiKey"));
+    assert.equal(extension.observed.progress.length, 0);
+  }
+});
+
+test("connection test timeout keeps the stored key and suggests network checks", async () => {
+  await withServer(() => { /* never respond */ }, async (baseUrl) => {
+    const extension = load({ apiBaseUrl: baseUrl, timeoutMs: 50, apiKey: "*****" }, [], "diff", "en", { secureKey: "valid-key" });
+    await extension.observed.commands.get("ai-commit.testConnection")();
+    assert.equal(extension.observed.errors.length, 1);
+    assert.match(extension.observed.errors[0], /timed out|超时/i);
+    assert.equal(storedKey(extension), "valid-key");
+    assert.ok(!extension.observed.secretOps.includes("delete"));
+  });
+});
+
+test("connection test maps a refused connection to local-service guidance", async () => {
+  const server = http.createServer((_req, res) => res.end("{}"));
+  await new Promise((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+  const port = server.address().port;
+  await new Promise((resolve) => { server.close(resolve); });
+  const extension = load({ apiBaseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "*****" }, [], "diff", "en", {
+    secureKey: "valid-key", errorAction: (items) => items[0],
+  });
+  await extension.observed.commands.get("ai-commit.testConnection")();
+  assert.equal(extension.observed.errors.length, 1);
+  assert.match(extension.observed.errors[0], /refused/i);
+  assert.ok(extension.observed.executed.includes("ai-commit.selectApiBaseUrl"));
+});
+
+test("connection test cancellation closes silently without errors", async () => {
+  await withServer(() => { /* hold the request */ }, async (baseUrl) => {
+    const extension = load({ apiBaseUrl: baseUrl, apiKey: "*****" }, [], "diff", "en", { secureKey: "valid-key" });
+    const pending = extension.observed.commands.get("ai-commit.testConnection")();
+    while (!extension.observed.progress.length) await new Promise((resolve) => setImmediate(resolve));
+    extension.observed.progress.at(-1).cancel();
+    await pending;
+    assert.equal(extension.observed.errors.length, 0);
+    assert.equal(extension.observed.infos.length, 0);
+    assert.ok(extension.observed.progress.every((progress) => progress.closed && progress.disposed));
+  });
+});
+
+test("saving a key offers an immediate connection test", async () => {
+  let requests = 0;
+  await withServer((_req, res) => { requests++; reply(res); }, async (baseUrl) => {
+    for (const language of ["en", "zh-cn"]) {
+      const before = requests;
+      const extension = load({ apiBaseUrl: baseUrl }, [], "diff", language, {
+        input: "fresh-key", migrate: true,
+        infoAction: (items) => items.find((item) => (language === "zh-cn" ? /测试连接/ : /Test Connection/).test(item)),
+      });
+      await extension.observed.commands.get("ai-commit.setApiKey")();
+      assert.equal(storedKey(extension), "fresh-key");
+      assert.ok(extension.observed.infos.some((message) => /saved securely|已安全保存/.test(message)));
+      // The success notification's Test Connection button runs the real probe.
+      assert.equal(requests, before + 1);
+      assert.ok(extension.observed.infos.some((message) => /Connection test succeeded|连接测试成功/.test(message)));
+      assert.equal(extension.observed.errors.length, 0);
+    }
+  });
 });

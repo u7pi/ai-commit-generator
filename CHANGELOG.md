@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin the API base URL, API Key, and Model settings to the top three positions of the Settings UI, ahead of the alphabetical remainder.
+- Add **Simple AI Committer: Test API Connection** to verify settings after configuration: a minimal probe reports the responding model and latency, or maps 401/403, 404, 400, 429, timeouts, DNS failures, and refused connections to corrective guidance with **Set API Key**, **Select API Base URL**, and **Open Settings** actions. The probe only diagnoses and never deletes the stored key; **Set API Key** offers the test on its success notification.
 - Add **Simple AI Committer: Clear All Settings and Stored Key** for uninstall-time cleanup: after a modal confirmation, remove all eight settings from user and current workspace scopes and delete the stored SecretStorage key, restoring defaults. Refused while generating; key and URL commands pause during cleanup; per-item failures are reported by scope and setting name, and the command is idempotent for retries.
 - Restore the settings mask on startup for retained secure keys after update/reinstall without probing the API. HTTP 401 clears the rejected credential and matching settings only while they still match the request; 403, network errors, and timeouts retain it, and newer keys/settings are preserved.
 - Bind the single stored API key atomically to a normalized request endpoint. Confirm legacy upgrades and destination changes, hide sensitive query values, and make dismissed dialogs cancel generation.

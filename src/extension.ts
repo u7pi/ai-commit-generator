@@ -161,6 +161,7 @@ const API_KEY = "aiCommit.apiKey";
 const MASKED_KEY = "*****";
 interface KeyRecord { version: 1; key: string; endpoint: string; }
 let secrets: vscode.SecretStorage;
+let extensionId = "";
 let keyRevision = 0;
 let keyWrites: Promise<unknown> = Promise.resolve();
 let migration: { signature: string; promise: Promise<string> } | undefined;
@@ -357,7 +358,12 @@ async function setApiKey() {
       await writeMaskedKey(vscode.workspace.getConfiguration("aiCommit"), key.trim());
       if (revision !== keyRevision || currentEndpoint() !== endpoint) throw credentialsChanged();
     });
-    vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存并绑定到当前接口。", "AI Commit: API key saved securely and bound to the current endpoint."));
+    const testNow = t("测试连接", "Test Connection");
+    const choice = await vscode.window.showInformationMessage(
+      t("AI Commit：API Key 已安全保存并绑定到当前接口。", "AI Commit: API key saved securely and bound to the current endpoint."),
+      testNow,
+    );
+    if (choice === testNow) await testConnection();
   } catch (err) {
     vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
   }
@@ -613,6 +619,138 @@ async function selectApiBaseUrl() {
   }
 }
 
+// ─── Connection Test ─────────────────────────────────────────────────────────
+
+function openSettingsQuery(): string {
+  return "@ext:" + extensionId;
+}
+
+// Map a failed probe to corrective guidance, then offer the matching actions.
+async function reportConnectionFailure(failure: unknown, config: { model: string }): Promise<void> {
+  const setKey = t("设置 API Key", "Set API Key");
+  const pickUrl = t("选择 API 地址", "Select API Base URL");
+  const openSettings = t("打开设置", "Open Settings");
+  // Duck-type instead of instanceof: request errors are created by Node in
+  // another realm, so they fail instanceof Error inside the extension host
+  // and would lose `code`/`statusCode` here.
+  const error = failure && typeof (failure as { message?: unknown }).message === "string"
+    ? (failure as Error)
+    : new Error(String(failure));
+  const statusCode = (error as { statusCode?: number }).statusCode;
+  const code = (error as { code?: string }).code;
+  let text: string;
+  let items: string[];
+  if (statusCode === 401 || statusCode === 403) {
+    text = t(
+      `AI Commit：API 认证失败（${statusCode}）。API Key 可能无效、已过期，或没有模型 ${config.model} 的访问权限，请检查后重新设置。`,
+      `AI Commit: API authentication failed (${statusCode}). The API key may be invalid or expired, or lack access to model ${config.model}. Check it and set it again.`,
+    );
+    items = [setKey, openSettings];
+  } else if (statusCode === 404) {
+    text = t(
+      "AI Commit：接口地址不存在（404）。请检查 aiCommit.apiBaseUrl：OpenAI 兼容地址通常以 /v1 结尾，扩展会自动拼接 /chat/completions。",
+      "AI Commit: Endpoint not found (404). Check aiCommit.apiBaseUrl: OpenAI-compatible URLs usually end with /v1; the extension appends /chat/completions automatically.",
+    );
+    items = [pickUrl, openSettings];
+  } else if (statusCode === 429) {
+    text = t(
+      "AI Commit：请求触发限流或账户额度不足（429）。请稍后重试，或检查服务商的速率与配额设置。",
+      "AI Commit: Rate limited or quota exhausted (429). Retry later, or review the provider's rate and quota settings.",
+    );
+    items = [openSettings];
+  } else if (statusCode === 400) {
+    text = t(
+      `AI Commit：请求被服务端拒绝（400）。常见原因：模型名“${config.model}”不存在，或该模型不接受显式温度参数（请保持 aiCommit.temperature 为 -1）。`,
+      `AI Commit: Request rejected (400). Common causes: the model "${config.model}" does not exist, or the model rejects an explicit temperature (keep aiCommit.temperature at -1).`,
+    );
+    items = [openSettings];
+  } else if (statusCode !== undefined) {
+    text = t(`AI Commit：服务端返回错误（${statusCode}）。`, `AI Commit: The server returned an error (${statusCode}).`) + " " + error.message.slice(0, 300);
+    items = [openSettings];
+  } else if (code === REQUEST_TIMEOUT_CODE) {
+    text = t(
+      "AI Commit：连接超时。请检查 API 地址、网络连接和代理设置；本地服务（如 Ollama）请先确认已启动，必要时调大 aiCommit.timeoutMs。",
+      "AI Commit: Connection timed out. Check the API URL, network, and proxy settings; for a local service (like Ollama) make sure it is running, and increase aiCommit.timeoutMs if needed.",
+    );
+    items = [pickUrl, openSettings];
+  } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    text = t(
+      "AI Commit：无法解析或连接 API 主机。请检查 aiCommit.apiBaseUrl 的拼写和网络／DNS 设置。",
+      "AI Commit: Cannot resolve or reach the API host. Check the aiCommit.apiBaseUrl spelling and your network/DNS settings.",
+    );
+    items = [pickUrl, openSettings];
+  } else if (code === "ECONNREFUSED") {
+    text = t(
+      "AI Commit：连接被拒绝。目标服务未启动或端口不对；使用本地服务（如 Ollama）时请先启动并确认端口。",
+      "AI Commit: Connection refused. The service is not running or the port is wrong; for local services (like Ollama) start it and verify the port.",
+    );
+    items = [pickUrl, openSettings];
+  } else {
+    text = t("AI Commit：连接测试失败：", "AI Commit: Connection test failed: ") + error.message.slice(0, 300);
+    items = [openSettings];
+  }
+  const choice = await vscode.window.showErrorMessage(text, ...items);
+  if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+  else if (choice === pickUrl) await vscode.commands.executeCommand("ai-commit.selectApiBaseUrl");
+  else if (choice === openSettings) await vscode.commands.executeCommand("workbench.action.openSettings", openSettingsQuery());
+}
+
+async function testConnection() {
+  if (clearingInProgress()) return;
+  let config;
+  try {
+    config = getConfig();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const choice = await vscode.window.showErrorMessage(
+      t("AI Commit：当前配置无效，无法测试连接。", "AI Commit: Current settings are invalid; the connection test was aborted.") + " " + reason,
+      t("打开设置", "Open Settings"),
+    );
+    if (choice) await vscode.commands.executeCommand("workbench.action.openSettings", openSettingsQuery());
+    return;
+  }
+  let apiKey: string;
+  try {
+    // Key resolution may ask for migration or endpoint approval; keep those
+    // dialogs before the progress notification so they stay visible.
+    apiKey = await getApiKey(config.apiBaseUrl);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return;
+    const setKey = t("设置 API Key", "Set API Key");
+    const choice = await vscode.window.showErrorMessage(
+      t("AI Commit：无法取得 API Key：", "AI Commit: Could not resolve the API key: ") + (err instanceof Error ? err.message : String(err)),
+      setKey,
+    );
+    if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+    return;
+  }
+  if (!apiKey) {
+    const setKey = t("设置 API Key", "Set API Key");
+    const choice = await vscode.window.showWarningMessage(
+      t("AI Commit：尚未设置 API Key。请先在设置中填写，或运行“设置 API Key”命令。", "AI Commit: No API key is set. Fill it in Settings or run 'Set API Key' first."),
+      setKey,
+    );
+    if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+    return;
+  }
+  let result: { model?: string; elapsedMs: number };
+  try {
+    result = await withGenerationProgress(
+      t("Simple AI Committer：正在测试 API 连接…", "Simple AI Committer: Testing API connection…"),
+      (signal) => pingApi(config.apiBaseUrl, apiKey, config.model, config.timeoutMs, signal),
+    );
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return;
+    await reportConnectionFailure(err, config);
+    return;
+  }
+  const model = result.model ?? config.model;
+  vscode.window.showInformationMessage(t(
+    `AI Commit：连接测试成功，模型 ${model} 响应正常（${result.elapsedMs} 毫秒）。`,
+    `AI Commit: Connection test succeeded. Model ${model} responded in ${result.elapsedMs} ms.`,
+  ));
+}
+
 // ─── Git Helpers ────────────────────────────────────────────────────────────
 
 function getGitApi(): any {
@@ -688,39 +826,31 @@ function abortError(): Error {
   return error;
 }
 
-function callLLM(
+// Stable machine-readable marker for the total-deadline error, so callers
+// recognize it by `code` instead of the (translatable) message text.
+const REQUEST_TIMEOUT_CODE = "AI_COMMIT_REQUEST_TIMEOUT";
+function requestTimeoutError(): Error {
+  const error = new Error("Request timeout") as Error & { code?: string };
+  error.code = REQUEST_TIMEOUT_CODE;
+  return error;
+}
+
+// Shared OpenAI-compatible chat-completions POST. Resolves with the parsed
+// JSON body for 2xx responses; rejects with a redacted error that carries
+// `statusCode` for non-2xx responses.
+function postChatCompletion(
   baseUrl: string,
   apiKey: string,
-  model: string,
-  systemPrompt: string,
-  temperature: number,
-  diff: string,
+  payload: object,
   timeoutMs: number,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<any> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError());
       return;
     }
-    const payload = JSON.stringify({
-      model,
-      max_tokens: 2048,
-      // temperature < 0 means "auto": omit the field entirely for models that
-      // only accept a fixed sampling temperature.
-      ...(temperature >= 0 ? { temperature } : {}),
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt || DEFAULT_SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: `Here is the git diff:\n\n${diff}`,
-        },
-      ],
-    });
-
+    const body = JSON.stringify(payload);
     const parsedUrl = getApiUrl(baseUrl);
     const options: https.RequestOptions = {
       hostname: parsedUrl.hostname,
@@ -729,7 +859,7 @@ function callLLM(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(payload),
+        "Content-Length": Buffer.byteLength(body),
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
     };
@@ -746,7 +876,7 @@ function callLLM(
       }
       return text;
     };
-    const finish = (error?: Error, message?: string) => {
+    const finish = (error?: Error, json?: any) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -754,17 +884,19 @@ function callLLM(
       if (error) {
         req.destroy();
         const statusCode = (error as Error & { statusCode?: number }).statusCode;
+        const code = (error as { code?: string }).code;
         const safeMessage = redact(error.message);
         if (safeMessage !== error.message) {
-          const redacted = new Error(safeMessage) as Error & { statusCode?: number };
+          const redacted = new Error(safeMessage) as Error & { statusCode?: number; code?: string };
           redacted.name = error.name;
           redacted.statusCode = statusCode;
+          redacted.code = code;
           reject(redacted);
         } else {
           reject(error);
         }
       } else {
-        resolve(message!);
+        resolve(json);
       }
     };
     const onAbort = () => finish(abortError());
@@ -804,24 +936,12 @@ function callLLM(
       res.on("end", () => {
         if (settled) return;
         try {
-          const body = Buffer.concat(chunks).toString("utf8");
-          const json = JSON.parse(body);
+          const json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           if (json.error) {
             finish(new Error(redact(String(json.error.message || JSON.stringify(json.error)))));
             return;
           }
-          const choice = json.choices?.[0];
-          if (choice?.finish_reason === "length") {
-            finish(new Error(t("API 输出被截断，请调整模型或提示词后重试。", "API output was truncated. Adjust the model or prompt and retry.")));
-            return;
-          }
-          const content = choice?.message?.content;
-          const message = typeof content === "string" ? content.trim() : "";
-          if (!message) {
-            finish(new Error(t("API 未返回有效的最终文本。", "Empty or invalid final text from API.")));
-            return;
-          }
-          finish(undefined, message);
+          finish(undefined, json);
         } catch (e) {
           finish(new Error("Failed to parse API response"));
         }
@@ -829,10 +949,68 @@ function callLLM(
     });
 
     req.on("error", (err) => finish(err));
-    timer = setTimeout(() => finish(new Error("Request timeout")), timeoutMs);
+    timer = setTimeout(() => finish(requestTimeoutError()), timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
-    req.end(payload);
+    req.end(body);
   });
+}
+
+function callLLM(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  systemPrompt: string,
+  temperature: number,
+  diff: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const payload = {
+    model,
+    max_tokens: 2048,
+    // temperature < 0 means "auto": omit the field entirely for models that
+    // only accept a fixed sampling temperature.
+    ...(temperature >= 0 ? { temperature } : {}),
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt || DEFAULT_SYSTEM_PROMPT,
+      },
+      {
+        role: "user",
+        content: `Here is the git diff:\n\n${diff}`,
+      },
+    ],
+  };
+  return postChatCompletion(baseUrl, apiKey, payload, timeoutMs, signal).then((json) => {
+    const choice = json.choices?.[0];
+    if (choice?.finish_reason === "length") {
+      throw new Error(t("API 输出被截断，请调整模型或提示词后重试。", "API output was truncated. Adjust the model or prompt and retry."));
+    }
+    const content = choice?.message?.content;
+    const message = typeof content === "string" ? content.trim() : "";
+    if (!message) {
+      throw new Error(t("API 未返回有效的最终文本。", "Empty or invalid final text from API."));
+    }
+    return message;
+  });
+}
+
+// Minimal connectivity probe for the test command: one token, a fixed prompt,
+// and any 2xx response counts as success regardless of content.
+function pingApi(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ model?: string; elapsedMs: number }> {
+  const startedAt = Date.now();
+  const payload = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+  return postChatCompletion(baseUrl, apiKey, payload, timeoutMs, signal).then((json) => ({
+    model: typeof json?.model === "string" && json.model ? json.model : undefined,
+    elapsedMs: Date.now() - startedAt,
+  }));
 }
 
 // ─── Main Command ───────────────────────────────────────────────────────────
@@ -1026,12 +1204,14 @@ async function generateCommitMessage(arg?: any) {
 
 export function activate(context: vscode.ExtensionContext) {
   secrets = context.secrets;
+  extensionId = context.extension?.id ?? "";
   ConfigManager.getInstance(); // 初始化配置监听
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "ai-commit.generateCommitMessage",
       (arg) => generateCommitMessage(arg),
     ),
+    vscode.commands.registerCommand("ai-commit.testConnection", testConnection),
     vscode.commands.registerCommand("ai-commit.selectApiBaseUrl", selectApiBaseUrl),
     vscode.commands.registerCommand("ai-commit.setApiKey", setApiKey),
     vscode.commands.registerCommand("ai-commit.clearApiKey", clearApiKey),

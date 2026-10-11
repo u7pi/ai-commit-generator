@@ -2,7 +2,7 @@
 
 [Documentation](./README.md) · [Project overview](../README.md)
 
-Open VS Code Settings and search for `aiCommit`. For connection examples, see [Provider examples](./providers.md).
+Open VS Code Settings and search for `aiCommit`. For connection examples, see [Provider examples](./providers.md). In the Settings UI, the three connection settings — API base URL, API Key, and Model — are pinned to the top; the remaining settings follow below in alphabetical order.
 
 ## Settings reference
 
@@ -24,6 +24,15 @@ Enter the URL in Settings or run **Simple AI Committer: Select API Base URL (Cus
 If the current workspace already has an API base URL configured, the picker updates the workspace setting. Otherwise it updates the user setting. Selecting a URL does not change the model or API key.
 
 Base URLs may include query parameters. The extension appends `/chat/completions` to the path, preserves the query, and ignores URL fragments.
+
+## Test the connection
+
+Run **Simple AI Committer: Test API Connection** from the Command Palette after configuring or changing settings. The extension validates the settings locally first, then sends a minimal probe request (`max_tokens: 1`). No API key yet, a migration, or a new destination approval is handled with the usual dialogs before the probe starts.
+
+- Success: a notification reports the responding model (as returned by the server, falling back to the configured one) and the round-trip time.
+- Failure: the notification explains the likely cause and offers corrective actions — **Set API Key** for 401/403, **Select API Base URL** for 404 and network-level URL problems, and **Open Settings** for invalid values, 400, 429, and other server errors. Timeouts, DNS failures (`ENOTFOUND`), and refused connections get targeted network or local-service (for example Ollama) guidance.
+
+The probe only diagnoses: a failed test never deletes the stored key or masks, unlike the automatic cleanup that follows a real generation request returning 401. **Set API Key** also offers **Test Connection** on its success notification, so a freshly saved key can be verified in one click.
 
 ## API key storage and migration
 
