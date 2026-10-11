@@ -211,11 +211,13 @@ test("manifest translations cover every referenced key and use matching key sets
   const zh = require("../package.nls.zh-cn.json");
   const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
   const { DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS } = load();
-  assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(manifest.contributes.configuration.properties).map((key) => key.slice(key.indexOf(".") + 1)).sort());
-  assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
-  assert.equal(manifest.contributes.configuration.properties["aiCommit.apiBaseUrl"].default, "https://api.deepseek.com/v1");
+  const props = manifest.contributes.configuration.properties;
+  const prop = (name) => props[Object.keys(props).find((key) => key.endsWith("." + name))];
+  assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(props).map((key) => key.slice(key.indexOf(".") + 1)).sort());
+  assert.equal(prop("systemPrompt").default, DEFAULT_SYSTEM_PROMPT_EN);
+  assert.equal(prop("apiBaseUrl").default, "https://api.deepseek.com/v1");
   assert.ok(manifest.activationEvents.includes("onStartupFinished"));
-  assert.equal(manifest.contributes.configuration.properties["aiCommit.apiKey"].markdownDeprecationMessage, undefined);
+  assert.equal(prop("apiKey").markdownDeprecationMessage, undefined);
   assert.ok(!JSON.stringify(manifest.contributes.menus).includes("clearAllData"));
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   for (const key of keys) {
