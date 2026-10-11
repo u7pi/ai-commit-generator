@@ -11,7 +11,7 @@ const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN };",
+  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
@@ -23,15 +23,37 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
   };
   const configurationEvents = new EventEmitter();
   const closeEvents = new EventEmitter();
+  const folderList = options.folders === undefined
+    ? [{ uri: { fsPath: process.cwd() } }]
+    : options.folders.map((folder) => ({ uri: { fsPath: folder.fsPath }, name: folder.name }));
   const vscode = {
     env: { language, clipboard: { writeText: async (value) => observed.clipboard.push(value) } },
     workspace: {
-      workspaceFolders: [{ uri: { fsPath: process.cwd() } }],
+      workspaceFolders: folderList.length ? folderList : undefined,
       onDidChangeConfiguration: (handler) => {
         configurationEvents.on("change", handler);
         return { dispose() { configurationEvents.off("change", handler); } };
       },
-      getConfiguration: () => {
+      getConfiguration: (section, scopeUri) => {
+        if (options.scopes) {
+          const buckets = options.scopes;
+          const folderPath = scopeUri?.fsPath ?? undefined;
+          const folderBucket = folderPath !== undefined ? ((buckets.folders ??= {})[folderPath] ??= {}) : undefined;
+          const bucketFor = (target) => target === 3 ? folderBucket : target === 2 ? (buckets.workspace ??= {}) : (buckets.global ??= {});
+          return {
+            get: (key, fallback) => (folderBucket?.[key] ?? buckets.workspace?.[key] ?? buckets.global?.[key]) ?? fallback,
+            inspect: (key) => ({ globalValue: buckets.global?.[key], workspaceValue: buckets.workspace?.[key], workspaceFolderValue: folderBucket?.[key] }),
+            update: async (key, value, target) => {
+              observed.updates.push({ key, value, target, folder: folderPath });
+              if (typeof options.updateError === "function") await options.updateError(key, value, target);
+              else if (options.updateError) throw new Error(options.updateError);
+              const bucket = bucketFor(target);
+              if (!bucket) throw new Error("WorkspaceFolder target requires a scoped configuration");
+              bucket[key] = value;
+              configurationEvents.emit("change", { affectsConfiguration: () => true });
+            },
+          };
+        }
         const snapshot = options.snapshotConfig ? { ...config } : config;
         return {
           get: (key, fallback) => (key === "apiKey" ? snapshot.keyWorkspaceValue ?? snapshot[key] : snapshot[key]) ?? fallback,
@@ -89,7 +111,7 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       registerCommand: (name, callback) => { observed.commands.set(name, callback); return { dispose() {} }; },
     },
     ProgressLocation: { SourceControl: 1, Notification: 15 },
-    ConfigurationTarget: { Global: 1, Workspace: 2 },
+    ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   };
   const context = {
     exports: {}, Buffer, AbortController, process, setTimeout, clearTimeout,
@@ -188,11 +210,13 @@ test("manifest translations cover every referenced key and use matching key sets
   const en = require("../package.nls.json");
   const zh = require("../package.nls.zh-cn.json");
   const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
-  const { DEFAULT_SYSTEM_PROMPT_EN } = load();
+  const { DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS } = load();
+  assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(manifest.contributes.configuration.properties).map((key) => key.slice("aiCommit.".length)).sort());
   assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiBaseUrl"].default, "https://api.deepseek.com/v1");
   assert.ok(manifest.activationEvents.includes("onStartupFinished"));
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiKey"].markdownDeprecationMessage, undefined);
+  assert.ok(!JSON.stringify(manifest.contributes.menus).includes("clearAllData"));
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   for (const key of keys) {
     assert.equal(typeof en[key], "string", key);
@@ -1492,4 +1516,222 @@ test("successful reuse restores an emptied field and retains the key", async () 
     assert.equal(config.apiKey, "*****"); assert.equal(storedKey(extension), "valid-key");
     assert.equal(extension.observed.errors.length, 0);
   });
+});
+
+
+test("clearing all data with a dismissed confirmation writes nothing", async () => {
+  const scopes = { global: { apiKey: "plaintext-key", model: "custom-model" }, workspace: { apiKey: "*****" } };
+  const extension = load({}, [], "diff", "en", { scopes, secureKey: "secure-secret" });
+  await extension.ready;
+  extension.observed.updates.length = 0;
+  extension.observed.secretOps.length = 0;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(extension.observed.warnings.length, 1);
+  assert.equal(extension.observed.updates.length, 0);
+  assert.equal(extension.observed.secretOps.length, 0);
+  assert.equal(scopes.global.apiKey, "plaintext-key");
+  assert.equal(scopes.workspace.apiKey, "*****");
+  assert.equal(storedKey(extension), "secure-secret");
+});
+
+test("clearing all data removes the eight settings across user, workspace and all folder scopes", async () => {
+  const folderA = path.resolve("folder-a");
+  const folderB = path.resolve("folder-b");
+  const scopes = {
+    global: { apiBaseUrl: "https://custom.example/v1", apiKey: "global-key", model: "m", systemPrompt: "p", maxDiffChars: 1000, temperature: 0.5, timeoutMs: 5000, gitPath: "/usr/bin/git" },
+    workspace: { model: "ws-model", timeoutMs: 6000 },
+    folders: { [folderA]: { gitPath: "git-a" }, [folderB]: { timeoutMs: 1 } },
+  };
+  const extension = load({}, [], "diff", "en", {
+    scopes, migrate: true,
+    folders: [{ fsPath: folderA, name: "folder-a" }, { fsPath: folderB, name: "folder-b" }],
+  });
+  await extension.ready;
+  extension.observed.updates.length = 0;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  for (const bucket of [scopes.global, scopes.workspace, scopes.folders[folderA], scopes.folders[folderB]]) {
+    for (const key of Object.keys(bucket)) assert.equal(bucket[key], undefined, key);
+  }
+  assert.equal(extension.observed.updates.length, 32);
+  assert.ok(extension.observed.updates.every((update) => update.value === undefined));
+  assert.equal(extension.observed.updates.filter((update) => update.target === 1).length, 8);
+  assert.equal(extension.observed.updates.filter((update) => update.target === 2).length, 8);
+  assert.equal(extension.observed.updates.filter((update) => update.target === 3 && update.folder === folderA).length, 8);
+  assert.equal(extension.observed.updates.filter((update) => update.target === 3 && update.folder === folderB).length, 8);
+  assert.ok(extension.observed.secretOps.includes("delete"));
+  assert.ok(extension.observed.infos.some((message) => /cleared/i.test(message) && /uninstall/i.test(message)));
+  assert.equal(extension.observed.errors.length, 0);
+});
+
+test("clearing all data removes plaintext keys, masks and the stored record", async () => {
+  const scopes = { global: { apiKey: "sk-plaintext" }, workspace: { apiKey: "*****" } };
+  const extension = load({}, [], "diff", "en", { scopes, secureKey: "secure-secret", migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.apiKey, undefined);
+  assert.equal(scopes.workspace.apiKey, undefined);
+  assert.equal(storedKey(extension), undefined);
+  assert.ok(extension.observed.secretOps.includes("delete"));
+  assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
+});
+
+test("clearing all data is idempotent on an empty configuration", async () => {
+  const scopes = { global: {} };
+  const extension = load({}, [], "diff", "en", { scopes, migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(extension.observed.errors.length, 0);
+  assert.equal(extension.observed.infos.filter((message) => /safely uninstall/i.test(message)).length, 2);
+});
+
+test("clearing all data restores manifest defaults", async () => {
+  const manifest = require("../package.json");
+  const scopes = { global: { apiBaseUrl: "https://custom.example/v1", apiKey: "sk-x", model: "custom-model", systemPrompt: "custom prompt", maxDiffChars: 100, temperature: 0.7, timeoutMs: 9999, gitPath: "/opt/git" } };
+  const extension = load({}, [], "diff", "en", { scopes, migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  const view = extension.vscode.workspace.getConfiguration("aiCommit");
+  for (const [fullKey, prop] of Object.entries(manifest.contributes.configuration.properties)) {
+    assert.deepEqual(view.get(fullKey.slice("aiCommit.".length), prop.default), prop.default, fullKey);
+  }
+});
+
+test("clearing all data only touches the eight declared settings", async () => {
+  const scopes = { global: { model: "m", unrelatedNote: "keep-me" } };
+  const extension = load({}, [], "diff", "en", { scopes, migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.unrelatedNote, "keep-me");
+  const touched = new Set(extension.observed.updates.map((update) => update.key));
+  assert.deepEqual([...touched].sort(), [...extension.CLEARABLE_SETTINGS].sort());
+});
+
+test("clearing all data without a workspace only clears user settings and succeeds", async () => {
+  const scopes = { global: { model: "custom-model" } };
+  const extension = load({}, [], "diff", "en", { scopes, folders: [], migrate: true });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(extension.observed.updates.length, 8);
+  assert.ok(extension.observed.updates.every((update) => update.target === 1));
+  assert.equal(scopes.global.model, undefined);
+  assert.equal(extension.observed.errors.length, 0);
+  assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
+});
+
+test("clearing all data continues after item failures and reports scopes and keys without values", async () => {
+  let failedOnce = false;
+  const scopes = { global: { apiKey: "sk-do-not-leak", model: "leak-model" }, workspace: { apiKey: "*****" } };
+  const extension = load({}, [], "diff", "en", {
+    scopes, migrate: true,
+    updateError: async (key, value, target) => {
+      if (!failedOnce && key === "model" && target === 1) {
+        failedOnce = true;
+        throw new Error("raw disk failure at /secret-path");
+      }
+    },
+  });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.apiKey, undefined);
+  assert.equal(scopes.workspace.apiKey, undefined);
+  assert.equal(scopes.global.model, "leak-model");
+  const report = extension.observed.errors.find((message) => /could not be cleared/i.test(message));
+  assert.ok(report, "partial failure reported");
+  assert.ok(report.includes("User / model"));
+  assert.ok(!report.includes("sk-do-not-leak") && !report.includes("leak-model") && !report.includes("raw disk failure"));
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.model, undefined);
+  assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
+});
+
+test("clearing all data keeps clearing settings when secure deletion fails without leaking details", async () => {
+  const scopes = { global: { apiKey: "sk-plain", model: "custom-model" } };
+  const extension = load({}, [], "diff", "en", { scopes, secureKey: "secure-secret", migrate: true, deleteError: "raw keyring failure" });
+  await extension.ready;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.equal(scopes.global.apiKey, undefined);
+  assert.equal(scopes.global.model, undefined);
+  assert.equal(storedKey(extension), "secure-secret");
+  const report = extension.observed.errors.find((message) => /could not be cleared/i.test(message));
+  assert.ok(report, "secure deletion failure reported");
+  assert.ok(/Secure storage \/ API Key/.test(report));
+  assert.ok(!report.includes("raw keyring failure") && !report.includes("secure-secret") && !report.includes("sk-plain"));
+});
+
+test("a key dialog opened before clearing cannot write afterwards", async () => {
+  const prompted = deferred();
+  const answer = deferred();
+  const extension = load({}, [], "diff", "en", {
+    scopes: { global: {} }, migrate: true,
+    input: () => { prompted.resolve(); return answer.promise; },
+  });
+  await extension.ready;
+  const pending = extension.observed.commands.get("ai-commit.setApiKey")();
+  await prompted.promise;
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  answer.resolve("stale-key");
+  await pending;
+  assert.ok(!extension.observed.secretOps.includes("store"));
+  assert.ok(extension.observed.errors.some((message) => /changed/i.test(message)));
+});
+
+test("clearing is refused while generating and blocks other commands while running", async () => {
+  const scopes = { global: { model: "custom-model" } };
+  const target = repo("busy");
+  const gate = deferred();
+  const deleteStarted = deferred();
+  const deleteHeld = deferred();
+  const extension = load({}, [target], () => gate.promise, "en", {
+    scopes, migrate: true,
+    deleteError: () => { deleteStarted.resolve(); return deleteHeld.promise; },
+  });
+  await extension.ready;
+  const generation = extension.generateCommitMessage(target);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await extension.observed.commands.get("ai-commit.clearAllData")();
+  assert.ok(extension.observed.infos.some((message) => /being generated/i.test(message)));
+  assert.equal(extension.observed.updates.length, 0);
+  assert.ok(!extension.observed.secretOps.includes("delete"));
+  extension.observed.progress[0].cancel();
+  gate.resolve("diff");
+  await generation;
+  const clearing = extension.observed.commands.get("ai-commit.clearAllData")();
+  await deleteStarted.promise;
+  await extension.generateCommitMessage(target);
+  await extension.observed.commands.get("ai-commit.setApiKey")();
+  await extension.observed.commands.get("ai-commit.selectApiBaseUrl")();
+  await extension.observed.commands.get("ai-commit.clearApiKey")();
+  assert.equal(extension.observed.infos.filter((message) => /please wait/i.test(message)).length, 4);
+  deleteHeld.resolve();
+  await clearing;
+  assert.equal(scopes.global.model, undefined);
+  assert.ok(extension.observed.infos.some((message) => /safely uninstall/i.test(message)));
+  assert.equal(extension.observed.errors.length, 0);
+});
+
+test("deactivation does not delete settings or keys", async () => {
+  const scopes = { global: { apiKey: "*****", model: "custom-model" } };
+  const extension = load({}, [], "diff", "en", { scopes, secureKey: "secure-secret" });
+  await extension.ready;
+  extension.observed.updates.length = 0;
+  extension.observed.secretOps.length = 0;
+  extension.deactivate();
+  assert.equal(extension.observed.updates.length, 0);
+  assert.equal(extension.observed.secretOps.length, 0);
+  assert.equal(storedKey(extension), "secure-secret");
+  assert.equal(scopes.global.apiKey, "*****");
+});
+
+test("clear all data command is registered and localized", async () => {
+  const en = load({}, [], "diff", "en", { scopes: { global: {} } });
+  await en.ready;
+  assert.ok(en.observed.commands.has("ai-commit.clearAllData"));
+  await en.observed.commands.get("ai-commit.clearAllData")();
+  assert.ok(en.observed.warnings.some((message) => /removes all 8 Simple AI Committer settings/.test(message)));
+  assert.ok(!en.observed.warnings.some((message) => /[一-鿿]/.test(message)));
+  const zh = load({}, [], "diff", "zh-cn", { scopes: { global: {} } });
+  await zh.ready;
+  await zh.observed.commands.get("ai-commit.clearAllData")();
+  assert.ok(zh.observed.warnings.some((message) => message.includes("删除 Simple AI Committer 的全部 8 项配置")));
 });

@@ -3,6 +3,7 @@
   "command.selectApiBaseUrl.title": "Simple AI Committer：选择 API 地址（支持自定义输入）",
   "command.setApiKey.title": "Simple AI Committer：设置 API Key",
   "command.clearApiKey.title": "Simple AI Committer：清除已存储的 API Key",
+  "command.clearAllData.title": "Simple AI Committer：清除所有配置和密钥",
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "兼容 OpenAI 的 API 地址，默认 DeepSeek。可直接输入或运行“Simple AI Committer：选择 API 地址”。实际请求地址（含路径或查询参数）变化后，发送已有密钥前需要确认。",
   "config.apiKey.description": "绑定接口的 API Key，建议运行“Simple AI Committer：设置 API Key”使用密码输入框。***** 表示已有安全密钥，启动时会在空设置栏恢复，无需联网验证。HTTP 401 清除被拒绝的密钥及掩码；403／网络错误保留。在此输入明文需迁移或明确授权本窗口使用；迁移会掩码并删除可访问设置层的同值副本。",

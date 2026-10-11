@@ -37,3 +37,13 @@ An empty settings field after update/reinstall is restored to `*****` on startup
 If secure storage cannot save or bind a key, no request is sent. If masking or plaintext-copy cleanup fails after secure storage succeeds, the secure record is retained: inspect user and workspace settings for residue. Different keys in other scopes are deliberately preserved and reported. Clearing a key removes stored credentials and accessible masks, but leftover plaintext requires new authorization. See [API key storage and migration](./configuration.md#api-key-storage-and-migration).
 
 After downgrading to an older extension version, set the key again because older versions cannot read the versioned record.
+
+## Uninstalling without leaving data
+
+Uninstalling the extension does not remove its settings or the key in SecretStorage. To remove them first:
+
+1. Run **Simple AI Committer: Clear All Settings and Stored Key** from the Command Palette and confirm the dialog.
+2. Wait for the success message. If some items could not be cleared, the message lists them by scope and setting name — fix the cause (for example a read-only settings file) and run the command again; it is idempotent.
+3. Uninstall the extension.
+
+Reinstalling afterwards starts from defaults with no key. The cleanup only covers the current VS Code window: repeat it in other profiles or machines (and in a dev-alias build, which has its own settings namespace and stored key), and note that Settings Sync may restore cleared values from other devices.

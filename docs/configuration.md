@@ -41,6 +41,8 @@ Migration retains `*****` in the effective user or workspace scope and deletes i
 
 **Simple AI Committer: Clear Stored API Key** deletes the secure record and removes all accessible user/current-workspace `*****` masks. Remaining plaintext requires explicit authorization again. To send no Authorization header, also empty the effective settings key. Older extension versions cannot read the new record: after downgrading, set the key again.
 
+**Simple AI Committer: Clear All Settings and Stored Key** is the uninstall-time cleanup. After a modal confirmation it deletes the SecretStorage record and removes the explicit values of all eight settings (`apiBaseUrl`, `apiKey`, `model`, `systemPrompt`, `maxDiffChars`, `temperature`, `timeoutMs`, `gitPath`) from user settings, the current workspace, and every open folder, restoring defaults; canceling changes nothing. It is refused while generation is running, and the other key and URL commands pause until it finishes. Each deletion is attempted independently: failures are listed by scope and setting name (never values or raw errors), everything else is still cleared, and the command is idempotent so you can simply retry. Cleanup covers only what this VS Code instance can reach — other profiles, machines, and the dev-alias build keep their own data, and Settings Sync may restore values from other devices.
+
 The default endpoint is now DeepSeek, matching the default model `deepseek-flash`. Explicitly configured URLs and models are retained. Users with an old stored key and no explicit URL must approve binding to the new default before it is used.
 
 ## Long diffs and generation behavior

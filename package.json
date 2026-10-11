@@ -48,6 +48,10 @@
       {
         "command": "ai-commit.clearApiKey",
         "title": "%command.clearApiKey.title%"
+      },
+      {
+        "command": "ai-commit.clearAllData",
+        "title": "%command.clearAllData.title%"
       }
     ],
     "menus": {

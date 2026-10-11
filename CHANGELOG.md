@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add **Simple AI Committer: Clear All Settings and Stored Key** for uninstall-time cleanup: after a modal confirmation, remove all eight settings from user, workspace, and every open folder scope and delete the stored SecretStorage key, restoring defaults. Refused while generating; key and URL commands pause during cleanup; per-item failures are reported by scope and setting name, and the command is idempotent for retries.
 - Restore the settings mask on startup for retained secure keys after update/reinstall without probing the API. HTTP 401 clears the rejected credential and matching settings only while they still match the request; 403, network errors, and timeouts retain it, and newer keys/settings are preserved.
 - Bind the single stored API key atomically to a normalized request endpoint. Confirm legacy upgrades and destination changes, hide sensitive query values, and make dismissed dialogs cancel generation.
 - Serialize key writes/clears, invalidate stale dialogs, remove matching plaintext copies across accessible scopes, and report preserved differing values or cleanup failures. Explicit plaintext authorization applies only to the same key/endpoint in the current window. Downgrading requires setting the key again.

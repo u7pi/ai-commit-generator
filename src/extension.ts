@@ -165,6 +165,9 @@ let keyRevision = 0;
 let keyWrites: Promise<unknown> = Promise.resolve();
 let migration: { signature: string; promise: Promise<string> } | undefined;
 let plaintextAuthorization: { key: string; endpoint: string } | undefined;
+// Settings removed by the clear-all command; keep in sync with the manifest.
+const CLEARABLE_SETTINGS = ["apiBaseUrl", "apiKey", "model", "systemPrompt", "maxDiffChars", "temperature", "timeoutMs", "gitPath"] as const;
+let clearingAllData = false;
 
 function serializeKeyWrite<T>(work: () => Promise<T>): Promise<T> {
   const result = keyWrites.then(work);
@@ -306,6 +309,7 @@ async function clearRejectedKey(used: RequestCredentials): Promise<boolean> {
 }
 
 async function setApiKey() {
+  if (clearingInProgress()) return;
   let endpoint: string;
   let label: string;
   const initialRevision = keyRevision;
@@ -360,6 +364,7 @@ async function setApiKey() {
 }
 
 async function clearApiKey() {
+  if (clearingInProgress()) return;
   ++keyRevision;
   plaintextAuthorization = undefined;
   try {
@@ -388,6 +393,79 @@ async function clearApiKey() {
     vscode.window.showInformationMessage(t("AI Commit：已清除安全密钥和设置掩码；已有明文设置仍会生效，并需授权使用。", "AI Commit: Cleared the stored key and settings masks; existing plaintext settings still apply and require authorization."));
   } catch (err) {
     vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function clearingInProgress(): boolean {
+  if (!clearingAllData) return false;
+  vscode.window.showInformationMessage(t("AI Commit：正在清除所有配置和密钥，请稍候。", "AI Commit: Clearing all settings and the stored key; please wait."));
+  return true;
+}
+
+function clearableScopes(): { label: string; target: vscode.ConfigurationTarget; uri?: vscode.Uri }[] {
+  const scopes: { label: string; target: vscode.ConfigurationTarget; uri?: vscode.Uri }[] = [
+    { label: t("用户", "User"), target: vscode.ConfigurationTarget.Global },
+  ];
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length) scopes.push({ label: t("工作区", "Workspace"), target: vscode.ConfigurationTarget.Workspace });
+  for (const folder of folders) {
+    scopes.push({ label: `${t("文件夹", "Folder")} "${folder.name}"`, target: vscode.ConfigurationTarget.WorkspaceFolder, uri: folder.uri });
+  }
+  return scopes;
+}
+
+async function clearAllData() {
+  if (clearingInProgress()) return;
+  const generatingNotice = t("AI Commit：正在生成提交信息，请结束或取消后再清除。", "AI Commit: A commit message is being generated. Let it finish or cancel it, then clear again.");
+  if (generatingRepos.size) {
+    vscode.window.showInformationMessage(generatingNotice);
+    return;
+  }
+  const confirmLabel = t("清除所有数据", "Clear All Data");
+  const choice = await vscode.window.showWarningMessage(
+    t("将从当前用户、当前工作区及所有打开文件夹的设置中删除 Simple AI Committer 的全部 8 项配置（可能修改项目的 .vscode/settings.json 或工作区文件），并删除安全存储中的 API Key。取消或关闭不修改任何数据。",
+      "This removes all 8 Simple AI Committer settings from user, current workspace, and all open folder settings (it may modify .vscode/settings.json or the workspace file), and deletes the API key from secure storage. Canceling changes nothing."),
+    { modal: true },
+    confirmLabel,
+  );
+  if (choice !== confirmLabel) return;
+  // Generation may have started while the dialog was open.
+  if (generatingRepos.size) {
+    vscode.window.showInformationMessage(generatingNotice);
+    return;
+  }
+  clearingAllData = true;
+  ++keyRevision;
+  plaintextAuthorization = undefined;
+  try {
+    const failures = await serializeKeyWrite(async (): Promise<string[]> => {
+      const failures: string[] = [];
+      try {
+        await secrets.delete(API_KEY);
+      } catch {
+        failures.push(t("安全存储 / API Key", "Secure storage / API Key"));
+      }
+      const scopes = clearableScopes();
+      for (const key of CLEARABLE_SETTINGS) {
+        for (const scope of scopes) {
+          try {
+            await vscode.workspace.getConfiguration("aiCommit", scope.uri ?? null).update(key, undefined, scope.target);
+          } catch {
+            failures.push(`${scope.label} / ${key}`);
+          }
+        }
+      }
+      return failures;
+    });
+    if (!failures.length) {
+      vscode.window.showInformationMessage(t("AI Commit：已清除所有扩展配置和已存储的密钥，恢复默认设置。现在可以安全卸载扩展。", "AI Commit: All extension settings and the stored key were cleared and defaults restored. You can now safely uninstall the extension."));
+    } else {
+      vscode.window.showErrorMessage(t("AI Commit：部分项目未能清除：", "AI Commit: Some items could not be cleared: ") + failures.join(t("、", ", ")) + t("。其余项目已清除，请重试。", ". Everything else was cleared; please retry."));
+    }
+  } catch (err) {
+    vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+  } finally {
+    clearingAllData = false;
   }
 }
 
@@ -485,6 +563,7 @@ function getApiUrl(baseUrl: string): URL {
 }
 
 async function selectApiBaseUrl() {
+  if (clearingInProgress()) return;
   const presets = [
     { label: "OpenAI", url: "https://api.openai.com/v1" },
     { label: "Kimi", url: "https://api.moonshot.cn/v1" },
@@ -817,6 +896,7 @@ function stagedChangesChanged() {
 }
 
 async function generateCommitMessage(arg?: any) {
+  if (clearingInProgress()) return;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   const repo = await getRepo(arg);
   const rootPath = repo?.rootUri.fsPath ?? workspaceRoot;
@@ -954,6 +1034,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("ai-commit.selectApiBaseUrl", selectApiBaseUrl),
     vscode.commands.registerCommand("ai-commit.setApiKey", setApiKey),
     vscode.commands.registerCommand("ai-commit.clearApiKey", clearApiKey),
+    vscode.commands.registerCommand("ai-commit.clearAllData", clearAllData),
   );
   Logger.info("Extension activated");
   return restoreStoredKeyMask();
