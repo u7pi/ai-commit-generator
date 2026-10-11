@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.3
 
-- Reaudit R1–R8: discard raw provider errors, honor explicit SCM roots, validate immutable credential snapshots for generation/probes, and preserve replacement/rebound keys on late 401. Coordinate updated local windows with a cancellable shared 5-second file lock; preserve freshly edited settings copies and invalidate URL pickers across clear-all. Expand regression and real-host verification, with refreshed official/dev acceptance packages at version 0.3.2.
+- Reaudit R1–R8: discard raw provider errors, honor explicit SCM roots, validate immutable credential snapshots for generation/probes, and preserve replacement/rebound keys on late 401. Coordinate updated local windows with a cancellable shared 5-second file lock; preserve freshly edited settings copies and invalidate URL pickers across clear-all. Expand regression and real-host verification.
 
 - Pin the API base URL, API Key, and Model settings to the top three positions of the Settings UI, ahead of the alphabetical remainder.
 - Add **Simple AI Committer: Test API Connection** to verify settings after configuration: a minimal probe reports the responding model and latency, or maps 401/403, 404, 400, 429, timeouts, DNS failures, and refused connections to corrective guidance with **Set API Key**, **Select API Base URL**, and **Open Settings** actions. The probe needs no key (unauthenticated endpoints like Ollama work) and sends the configured temperature so fixed-temperature models fail the test exactly as they fail generation; it never deletes the stored key. **Set API Key** offers the test on its success notification.

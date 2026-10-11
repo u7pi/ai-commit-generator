@@ -31,7 +31,7 @@ A simple, practical way to generate Git commit messages from **staged changes** 
 Use **Extensions: Install from VSIX...** from the Command Palette, or run:
 
 ```bash
-code --install-extension simple-ai-committer-0.3.2.vsix
+code --install-extension simple-ai-committer-0.3.3.vsix
 ```
 
 ## Usage
