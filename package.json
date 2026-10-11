@@ -64,7 +64,7 @@
       "properties": {
         "aiCommit.apiBaseUrl": {
           "type": "string",
-          "default": "https://api.openai.com/v1",
+          "default": "https://api.deepseek.com/v1",
           "description": "%config.apiBaseUrl.description%"
         },
         "aiCommit.apiKey": {

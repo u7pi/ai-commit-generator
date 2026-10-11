@@ -2,7 +2,7 @@
 
 [Documentation](./README.md) · [Project overview](../README.md)
 
-Use an endpoint that supports the OpenAI-compatible `/chat/completions` request format. Set the model and API key separately; model availability depends on your provider. See [Configuration](./configuration.md#select-an-api-base-url) for the API base URL picker.
+Use an endpoint that supports the OpenAI-compatible `/chat/completions` request format. The defaults target DeepSeek. Set the model and API key separately; model availability depends on your provider. Switching endpoints requires approval before the single stored key is sent to the new destination. See [Configuration](./configuration.md#select-an-api-base-url) for the API base URL picker.
 
 ## OpenAI
 
@@ -36,7 +36,7 @@ The API picker includes `https://api.moonshot.cn/v1` for Kimi and `https://open.
 }
 ```
 
-Start Ollama and ensure the selected model is installed. For a local endpoint that requires no authentication, run **Simple AI Committer: Clear Stored API Key** and leave the legacy `aiCommit.apiKey` empty. A stored key would otherwise take priority over the empty setting.
+Start Ollama and ensure the selected model is installed. For a local endpoint that requires no authentication, run **Simple AI Committer: Clear Stored API Key** and leave `aiCommit.apiKey` empty. Otherwise, the stored key would require destination approval before being sent even if the settings field is empty.
 
 ## Claude, Gemini, and other models
 

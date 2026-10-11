@@ -6,7 +6,7 @@ For settings and defaults, see [Configuration](./configuration.md#settings-refer
 
 ## Git is not found on Windows
 
-The VS Code extension process may not have Git in its `PATH`. Set `aiCommit.gitPath` to the full executable path, for example `C:\Program Files\Git\bin\git.exe`. Run `where.exe git` in PowerShell or Command Prompt to locate it.
+The VS Code extension process may not have Git in its `PATH`. Set `aiCommit.gitPath` to the full executable path, for example `C:\Program Files\Git\bin\git.exe`. Spaces in absolute paths are supported; enter the path without surrounding quotes or shell arguments. Run `where.exe git` in PowerShell or Command Prompt to locate it. Each Git command has a fixed 30-second deadline; changing `aiCommit.timeoutMs` does not extend it.
 
 ## The commit message uses the wrong language
 
@@ -16,11 +16,22 @@ See [Commit format and language](./configuration.md#commit-format-and-language) 
 
 ## No message is generated
 
-- Stage your changes first. Without a staged diff, the extension writes a hint only to an empty Source Control input and skips the API call.
-- Check the base URL, model, and API key. Stored keys take priority over legacy settings; update the key when switching providers. Provider errors redact the key before display and logging.
+- Stage your changes first. Without a staged diff, the extension shows a warning and skips the API call. The SCM button can also show a temporary placeholder; commit text is never changed. The Command Palette uses only the warning when no public placeholder is available.
+- Check the base URL, model, and API key. The defaults are DeepSeek (`https://api.deepseek.com/v1`, `deepseek-flash`); explicit settings are retained. A changed destination or an old unbound key requires confirmation. Dismissing a key dialog cancels the request. A new plaintext key replaces the stored key only after any necessary destination approval. Query values are hidden in key prompts, and provider errors redact the key before display and logging.
 - For models that reject a configurable temperature (most current models do), `aiCommit.temperature` defaults to `-1`, which omits the parameter. A `400` mentioning temperature means an explicit `0–2` value was set — remove it or set `-1`.
 - If the request times out, check the endpoint or increase `aiCommit.timeoutMs`. This limits total request time, even if the server keeps sending data.
 - If output is truncated or contains only reasoning, adjust the model or prompt and retry. Only final nonempty text is inserted.
+- Responses exceeding 1 MiB, including error bodies, are rejected. Check the provider or gateway if this occurs.
 - If your draft changed during generation, the result is skipped to preserve your edits. Repeated clicks for the same repository do not start another request.
+- If staged content changed during generation, the old result is discarded. Retry after finishing staging.
+- If the built-in Git API is missing or disabled, the workspace folder is used and successful output goes to the clipboard.
 
 Cancel through the generation notification. Cancellation preserves the draft and does not show an error.
+
+## Key storage or authentication errors
+
+For 401/403, use **Set API Key** in the error notification. Progress and the repository lock have already been released, so you can retry even while that notification is open.
+
+If secure storage cannot save or bind a key, no request is sent. If masking or plaintext-copy cleanup fails after secure storage succeeds, the secure record is retained: inspect user and workspace settings for residue. Different keys in other scopes are deliberately preserved and reported. Clearing a key removes stored credentials and accessible masks, but leftover plaintext requires new authorization. See [API key storage and migration](./configuration.md#api-key-storage-and-migration).
+
+After downgrading to an older extension version, set the key again because older versions cannot read the versioned record.

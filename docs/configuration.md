@@ -8,7 +8,7 @@ Open VS Code Settings and search for `aiCommit`. For connection examples, see [P
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.openai.com/v1` |
+| `aiCommit.apiBaseUrl` | OpenAI-compatible API base URL, without `/chat/completions` | `https://api.deepseek.com/v1` |
 | `aiCommit.apiKey` | Convenience input for the API key; on first use it is moved to SecretStorage and this field then shows `*****` (masked) | Empty |
 | `aiCommit.model` | Model ID supported by your endpoint | `deepseek-flash` |
 | `aiCommit.systemPrompt` | Custom system prompt; until edited, the built-in prompt is used (Chinese for the `zh-cn` display language, English otherwise). The Settings default shows the built-in English prompt | Built-in prompt |
@@ -27,19 +27,27 @@ Base URLs may include query parameters. The extension appends `/chat/completions
 
 ## API key storage and migration
 
-Enter the key in the `aiCommit.apiKey` setting or run **Simple AI Committer: Set API Key** to type it in a password input box. Cancelled or blank command input leaves the stored key unchanged. The extension keeps a single key in VS Code SecretStorage; it is shared across workspaces and API base URLs and is not synced across machines. Configure it separately on each machine and update it when switching providers.
+Run **Simple AI Committer: Set API Key** to type the key in a password input box showing the current destination, or enter it in `aiCommit.apiKey`. Cancelled or blank input leaves the stored key unchanged. The extension keeps a single versioned record containing the key and its bound endpoint in VS Code SecretStorage; it is not synced across machines.
 
-The first generation that needs a plaintext settings key offers **Migrate and mask** or **Not now**, once per window per value. Migration saves the key, then replaces its original user or workspace setting with the `*****` mask. A storage failure leaves the original setting intact; a masking failure reports that the settings field could not be updated. Other settings scopes are not removed. No staged changes means no migration prompt.
+An existing key requires **Allow and bind to this endpoint** before sending it to a different destination. The destination identity uses the actual request's normalized protocol, host, port, path, and query parameters; fragments are ignored. Changing a path or query also requires confirmation. The confirmation hides query values and never shows the key. Dismissing it cancels generation without sending a request. Legacy string-only stored keys require this confirmation once to upgrade; no re-entry is needed.
 
-A plaintext key in the settings field always represents your latest input: whenever it differs from the stored key, secure storage is replaced automatically and the field shows `*****` again, with an information message instead of a prompt. When nothing is stored yet, the first plaintext key still asks for a one-time **Migrate and mask** confirmation; declining uses the settings key for that run without storing it. A settings key identical to the stored key is masked without prompting.
+When no secure key exists, the first use of plaintext offers **Migrate and mask** or **Use plaintext this window, without migrating**, showing the destination. The latter explicitly authorizes only that key and endpoint for the current window. Dismissing the dialog sends nothing. On an already bound endpoint, a new plaintext value replaces the stored key and is masked without another destination prompt. No staged changes means no key prompt.
 
-**Simple AI Committer: Clear Stored API Key** deletes the SecretStorage value and removes the `*****` mask from the settings field; a plaintext settings key, if present, becomes effective again. To send no Authorization header, clear the stored key and ensure the effective settings key is empty.
+Migration retains `*****` in the effective user or workspace scope and deletes identical plaintext copies from other accessible user/current-workspace scopes. Different plaintext values are preserved with a warning. Storage failures abort generation and leave the old data intact; settings-update failures retain the secure record and explicitly report possible plaintext residue. Pending dialogs do not block key commands; changes to credentials or destination invalidate old operations, and writes/clears are serialized.
+
+**Simple AI Committer: Clear Stored API Key** deletes the secure record and removes all accessible user/current-workspace `*****` masks. Remaining plaintext requires explicit authorization again. To send no Authorization header, also empty the effective settings key. Older extension versions cannot read the new record: after downgrading, set the key again.
+
+The default endpoint is now DeepSeek, matching the default model `deepseek-flash`. Explicitly configured URLs and models are retained. Users with an old stored key and no explicit URL must approve binding to the new default before it is used.
 
 ## Long diffs and generation behavior
 
 Diffs within `maxDiffChars` are sent unchanged. Longer diffs include staged file names with insertion/deletion counts; binary files are marked `binary`. The summary uses at most one third of the budget and reports omitted files if it cannot fit the full list. Remaining space holds the start of the diff and a truncation notice. All three parts count toward the limit, measured as JavaScript string characters. Extremely small budgets fall back to direct truncation.
 
-Only one generation runs per repository; other repositories can run concurrently. Cancel through the generation notification. Drafts edited during generation are preserved, and no-stage hints only fill an empty input. Empty final text, reasoning-only responses, and output stopped by a length limit are rejected.
+Only one generation runs per repository; other repositories can run concurrently. Cancel through the Git-reading or API-generation notification. Each Git command has a fixed 30-second deadline that continuous output cannot extend; `timeoutMs` controls only the API request. Absolute Git executable paths containing spaces are supported without a shell.
+
+The full staged diff is compared again before sending and before writing the input or clipboard. If it changed, the result is discarded and you are asked to retry. Drafts edited during generation are preserved. API success and error bodies are limited to 1 MiB of received bytes. Empty final text, reasoning-only responses, and output stopped by a length limit are rejected. Authentication errors appear after progress ends and the repository lock is released, so retrying is possible while the error prompt remains open.
+
+Without staged changes, a warning remains visible and commit text is never modified. The SCM title-bar command temporarily changes the public input placeholder to distinguish unstaged changes from no changes. It restores the original placeholder when staged content appears, on retry, repository close, or extension deactivation. The Command Palette uses notification-only hints when the public input object is unavailable. If the built-in Git API is missing, disabled, or fails to initialize, generation uses the workspace folder and copies successful output to the clipboard.
 
 ## Commit format and language
 

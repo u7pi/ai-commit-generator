@@ -4,40 +4,57 @@ const http = require("node:http");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { createRequire } = require("node:module");
+const { spawn } = require("node:child_process");
 const { EventEmitter, getEventListeners } = require("node:events");
 const ts = require("typescript");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const js = ts.transpileModule(
-  source + "\nexports.test = { getRepo, getDiffStaged, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN };",
+  source + "\nexports.test = { getRepo, getDiffStaged, getApiKey, callLLM, generateCommitMessage, selectApiBaseUrl, DEFAULT_SYSTEM_PROMPT_EN };",
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
 ).outputText;
 
 function load(config = {}, repositories = [], diff = "+ staged change", language = "en", options = {}) {
   const observed = {
     errors: [], warnings: [], infos: [], logs: [], progress: [], clipboard: [], gitOptions: [], diffCalls: 0, statusCalls: 0, updates: [], executed: [],
-    commands: new Map(), secretValues: new Map(options.secureKey ? [["aiCommit.apiKey", options.secureKey]] : []),
+    commands: new Map(), secretValues: new Map(options.secureKey ? [["aiCommit.apiKey", options.legacyStored ? options.secureKey : boundKey(config.apiBaseUrl, options.secureKey)]] : []),
     secretOps: [], summaryArgs: [], inputOptions: [],
   };
+  const configurationEvents = new EventEmitter();
+  const closeEvents = new EventEmitter();
   const vscode = {
     env: { language, clipboard: { writeText: async (value) => observed.clipboard.push(value) } },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: process.cwd() } }],
-      onDidChangeConfiguration: () => ({ dispose() {} }),
-      getConfiguration: () => ({
-        get: (key, fallback) => (key === "apiKey" ? config.keyWorkspaceValue ?? config[key] : config[key]) ?? fallback,
+      onDidChangeConfiguration: (handler) => {
+        configurationEvents.on("change", handler);
+        return { dispose() { configurationEvents.off("change", handler); } };
+      },
+      getConfiguration: () => {
+        const snapshot = options.snapshotConfig ? { ...config } : config;
+        return {
+        get: (key, fallback) => (key === "apiKey" ? snapshot.keyWorkspaceValue ?? snapshot[key] : snapshot[key]) ?? fallback,
         inspect: (key) => key === "apiKey"
           ? { workspaceValue: config.keyWorkspaceValue, globalValue: config.apiKey }
           : { workspaceValue: config.workspaceValue },
         update: async (key, value, target) => {
           observed.updates.push({ key, value, target });
-          if (options.updateError) throw new Error(options.updateError);
+          if (typeof options.updateError === "function") await options.updateError(key, value, target);
+          else if (options.updateError) throw new Error(options.updateError);
           if (key === "apiKey" && target === 2) config.keyWorkspaceValue = value;
           else config[key] = value;
+          configurationEvents.emit("change", { affectsConfiguration: () => true });
         },
-      }),
+      }; },
     },
-    extensions: { getExtension: () => ({ exports: { getAPI: () => ({ repositories }) } }) },
+    extensions: { getExtension: () => options.gitUnavailable ? undefined : ({ exports: { enabled: !options.gitDisabled, getAPI: () => {
+      if (options.gitApiError) throw new Error("Git model not found");
+      return { repositories, onDidCloseRepository: (handler) => {
+        closeEvents.on("close", handler);
+        return { dispose() { closeEvents.off("close", handler); } };
+      } };
+    } } }) },
     window: {
       showErrorMessage: async (message, ...items) => {
         observed.errors.push(message);
@@ -46,23 +63,24 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       },
       showWarningMessage: async (message, ...items) => {
         observed.warnings.push(message);
+        items = items.filter(item => typeof item === "string");
         if (typeof options.migrate === "function") return options.migrate(items);
         return options.migrate ? items[0] : undefined;
       },
       showInformationMessage: async (message) => { observed.infos.push(message); },
-      showInputBox: async (inputOptions) => { observed.inputOptions.push(inputOptions); return options.input; },
+      showInputBox: async (inputOptions) => { observed.inputOptions.push(inputOptions); return typeof options.input === "function" ? options.input(inputOptions) : options.input; },
       withProgress: async (options, callback) => {
         const events = new EventEmitter();
         let cancelled = false;
-        const progress = { options, disposed: false, cancel() { cancelled = true; events.emit("cancel"); } };
+        const progress = { options, disposed: false, closed: false, cancel() { cancelled = true; events.emit("cancel"); } };
         observed.progress.push(progress);
-        return callback({}, {
+        try { return await callback({}, {
           get isCancellationRequested() { return cancelled; },
           onCancellationRequested: (handler) => {
             events.on("cancel", handler);
             return { dispose() { progress.disposed = true; events.removeListener("cancel", handler); } };
           },
-        });
+        }); } finally { progress.closed = true; }
       },
     },
     commands: {
@@ -79,13 +97,13 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       warn: (...args) => observed.logs.push(args.map(String).join(" ")),
       error: (...args) => observed.logs.push(args.map(String).join(" ")),
     },
-    require: (name) => name === "vscode" ? vscode : name === "simple-git" ? {
+    require: (name) => name === "vscode" ? vscode : name === "simple-git" ? options.realGit ?? {
       simpleGit: (gitOptions) => {
         observed.gitOptions.push(gitOptions);
         return {
-          diff: async () => { observed.diffCalls++; return typeof diff === "function" ? diff() : diff; },
-          status: async () => { observed.statusCalls++; return { files: [{}] }; },
-          diffSummary: async (args) => { observed.summaryArgs.push(args); return options.summary ?? { files: [] }; },
+          diff: async () => { observed.diffCalls++; return typeof diff === "function" ? diff(gitOptions, observed.diffCalls) : diff; },
+          status: async () => { observed.statusCalls++; return { files: options.noChanges ? [] : [{}] }; },
+          diffSummary: async (args) => { observed.summaryArgs.push(args); return typeof options.summary === "function" ? options.summary(gitOptions) : options.summary ?? { files: [] }; },
         };
       },
     } : require(name),
@@ -95,7 +113,8 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
     get: async (key) => { observed.secretOps.push("get"); return observed.secretValues.get(key); },
     store: async (key, value) => {
       observed.secretOps.push("store");
-      if (options.storeError) throw new Error(options.storeError);
+      if (typeof options.storeError === "function") await options.storeError(key, value);
+      else if (options.storeError) throw new Error(options.storeError);
       observed.secretValues.set(key, value);
     },
     delete: async (key) => {
@@ -104,8 +123,24 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       observed.secretValues.delete(key);
     },
   };
-  context.exports.activate({ subscriptions: [], secrets });
-  return { ...context.exports.test, observed, vscode };
+  const subscriptions = [];
+  context.exports.activate({ subscriptions, secrets });
+  return { ...context.exports.test, observed, vscode, subscriptions, deactivate: context.exports.deactivate,
+    changeConfiguration() { configurationEvents.emit("change", { affectsConfiguration: () => true }); },
+    closeRepo(target) { closeEvents.emit("close", target); },
+  };
+}
+
+function boundKey(baseUrl = "https://api.deepseek.com/v1", key = "secure-secret") {
+  const url = new URL(baseUrl);
+  url.pathname = url.pathname.replace(/\/+$/, "") + "/chat/completions";
+  return JSON.stringify({ version: 1, key, endpoint: url.origin + url.pathname + url.search });
+}
+
+function storedKey(extension) {
+  const value = extension.observed.secretValues.get("aiCommit.apiKey");
+  if (!value) return undefined;
+  try { return JSON.parse(value).key; } catch { return value; }
 }
 
 function createPicker(extension) {
@@ -124,7 +159,11 @@ function createPicker(extension) {
 }
 
 function repo(root) {
-  return { rootUri: { fsPath: path.resolve(root) }, inputBox: { value: "" } };
+  const events = new EventEmitter();
+  return { rootUri: { fsPath: path.resolve(root) }, inputBox: { value: "", placeholder: "Original placeholder" },
+    state: { indexChanges: [], onDidChange(handler) { events.on("change", handler); return { dispose() { events.off("change", handler); } }; } },
+    changeState() { events.emit("change"); }, listenerCount() { return events.listenerCount("change"); },
+  };
 }
 
 async function withServer(handler, run) {
@@ -149,6 +188,7 @@ test("manifest translations cover every referenced key and use matching key sets
   const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
   const { DEFAULT_SYSTEM_PROMPT_EN } = load();
   assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
+  assert.equal(manifest.contributes.configuration.properties["aiCommit.apiBaseUrl"].default, "https://api.deepseek.com/v1");
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiKey"].markdownDeprecationMessage, undefined);
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   for (const key of keys) {
@@ -204,7 +244,8 @@ test("picker and empty-stage hints use Simplified Chinese only for zh-cn", async
     const selection = extension.selectApiBaseUrl();
     assert.equal(picker.title, language === "zh-cn" ? "AI Commit：选择 API 地址" : "AI Commit: Select API Base URL");
     assert.equal(picker.placeholder, language === "zh-cn" ? "选择常用地址，或直接输入 http(s) URL" : "Select a preset or enter an http(s) URL");
-    assert.equal(target.inputBox.value, language === "zh-cn" ? "⚠ 没有已暂存的更改，请先暂存更改" : "⚠ No staged changes — stage your changes first");
+    assert.equal(target.inputBox.value, "");
+    assert.equal(target.inputBox.placeholder, language === "zh-cn" ? "请先暂存更改，再生成提交信息" : "Stage your changes first, then generate a commit message");
     events.emit("change", "https://");
     picker.selectedItems = [picker.items[0]];
     events.emit("accept");
@@ -430,7 +471,8 @@ test("an empty staged diff leaves an existing draft intact", async () => {
   const extension = load({}, [target], "");
   await extension.generateCommitMessage(target);
   assert.equal(target.inputBox.value, "fix: my draft");
-  assert.equal(extension.observed.progress.length, 0);
+  assert.equal(extension.observed.progress.length, 1);
+  assert.ok(extension.observed.progress[0].closed);
 });
 
 test("generation uses cancellable notifications and can retry after cancellation or failure", async () => {
@@ -453,7 +495,7 @@ test("generation uses cancellable notifications and can retry after cancellation
       const first = extension.generateCommitMessage(target);
       if (failure === "cancel") {
         await arrived.promise;
-        extension.observed.progress[0].cancel();
+        extension.observed.progress.at(-1).cancel();
       }
       await first;
       if (failure === "cancel") {
@@ -585,7 +627,8 @@ test("password commands store one key and mirror or clear the settings mask", as
     await extension.observed.commands.get("ai-commit.setApiKey")();
     assert.equal(extension.observed.inputOptions[0].password, true);
     const trimmed = input?.trim();
-    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), trimmed ? "new-secret" : "old-secret");
+    assert.equal(storedKey(extension), trimmed ? "new-secret" : "old-secret");
+    assert.match(extension.observed.inputOptions[0].prompt, /api\.deepseek\.com/);
     // Storing via the command replaces any plaintext with the ***** mask; blank input leaves settings untouched.
     assert.deepEqual(extension.observed.updates, trimmed ? [{ key: "apiKey", value: "*****", target: 1 }] : []);
     await extension.observed.commands.get("ai-commit.clearApiKey")();
@@ -611,7 +654,7 @@ test("plaintext settings key imports into secure storage with confirmation and m
       const accept = !mode.includes("declined");
       const extension = load(config, [target], "diff", "en", {
         secureKey: stored,
-        migrate: accept,
+        migrate: accept ? true : items => items[1],
         storeError: mode.endsWith("store-failed") ? "legacy-secret" : undefined,
         updateError: mode === "clear-failed" ? "legacy-secret" : undefined,
       });
@@ -621,14 +664,14 @@ test("plaintext settings key imports into secure storage with confirmation and m
       const effectiveKey = workspace ? "workspace-secret"
         : hasStored && (!accept || adoptFailed) ? "secure-secret"
         : "legacy-secret";
-      assert.deepEqual(headers, [`Bearer ${effectiveKey}`, `Bearer ${effectiveKey}`], mode);
+      assert.deepEqual(headers, mode.endsWith("store-failed") ? [] : [`Bearer ${effectiveKey}`, `Bearer ${effectiveKey}`], mode);
       // Only the initial import into empty secure storage prompts; a differing
       // plaintext key with a stored key is adopted automatically.
-      assert.equal(extension.observed.warnings.length, hasStored ? 0 : 1, mode);
+      assert.equal(extension.observed.warnings.length, hasStored ? 0 : mode === "store-failed" ? 2 : 1, mode);
       const storedNow = ["declined", "store-failed"].includes(mode) ? undefined
         : adoptFailed ? "secure-secret"
         : effectiveKey;
-      assert.equal(extension.observed.secretValues.get("aiCommit.apiKey") ?? undefined, storedNow, mode);
+      assert.equal(storedKey(extension), storedNow, mode);
       const expectedUpdates = ["declined", "store-failed", "stored-differs-store-failed"].includes(mode) ? 0
         : mode === "clear-failed" ? 2
         : 1;
@@ -637,7 +680,7 @@ test("plaintext settings key imports into secure storage with confirmation and m
         assert.deepEqual([update.key, update.value], ["apiKey", "*****"], mode);
         assert.equal(update.target, workspace ? 2 : 1, mode);
       }
-      const expectedErrors = mode === "clear-failed" ? 2 : mode.endsWith("store-failed") ? 1 : 0;
+      const expectedErrors = mode === "clear-failed" || mode.endsWith("store-failed") ? 2 : 0;
       assert.equal(extension.observed.errors.length, expectedErrors, mode);
       for (const message of [...extension.observed.errors, ...extension.observed.warnings, ...extension.observed.infos, ...extension.observed.logs]) {
         assert.ok(!message.includes("legacy-secret") && !message.includes("workspace-secret") && !message.includes("secure-secret"), `${mode}: ${message}`);
@@ -680,7 +723,7 @@ test("a whitespace-padded plaintext key is trimmed before storage and use", asyn
     const extension = load({ apiBaseUrl: baseUrl, apiKey: "  padded-secret \n" }, [target], "diff", "en", { migrate: true });
     await extension.generateCommitMessage(target);
     assert.deepEqual(headers, ["Bearer padded-secret"]);
-    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), "padded-secret");
+    assert.equal(storedKey(extension), "padded-secret");
   });
 });
 
@@ -696,7 +739,7 @@ test("overwriting the mask with a new key replaces the stored key without prompt
     settings.apiKey = "edited-secret";
     await extension.generateCommitMessage(target);
     assert.deepEqual(headers, ["Bearer old-secret", "Bearer edited-secret"]);
-    assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), "edited-secret");
+    assert.equal(storedKey(extension), "edited-secret");
     assert.equal(extension.observed.warnings.length, 0);
     assert.equal(settings.apiKey, "*****");
     assert.match(extension.observed.infos.at(-1), /new settings API key/);
@@ -843,21 +886,438 @@ test("401 and 403 responses offer an actionable Set API Key prompt", async () =>
 });
 
 
-test("key confirmation resolves before the progress notification starts", async () => {
+test("key confirmation resolves between the closed Git progress and API progress", async () => {
   await withServer((_req, res) => reply(res), async (baseUrl) => {
     const target = repo("app");
     let releasePrompt;
     const extension = load({ apiBaseUrl: baseUrl, apiKey: "legacy-secret" }, [target], "diff", "en", {
-      migrate: () => new Promise((resolve) => { releasePrompt = () => resolve(undefined); }),
+      migrate: (items) => new Promise((resolve) => { releasePrompt = () => resolve(items[0]); }),
     });
     const work = extension.generateCommitMessage(target);
     await new Promise((resolve) => setImmediate(resolve));
-    // The confirmation is still pending: no progress notification may exist yet.
-    assert.equal(extension.observed.progress.length, 0);
+    // The confirmation is pending with no active progress notification.
+    assert.equal(extension.observed.progress.length, 1);
+    assert.ok(extension.observed.progress[0].closed);
     assert.equal(extension.observed.warnings.length, 1);
     releasePrompt();
     await work;
-    assert.equal(extension.observed.progress.length, 1);
+    assert.equal(extension.observed.progress.length, 2);
     assert.equal(target.inputBox.value, "fix: generated message");
+  });
+});
+
+test("stored keys require approval for a new endpoint, including query changes", async () => {
+  const headers = [];
+  await withServer((req, res) => { headers.push(req.headers.authorization); reply(res); }, async (baseUrl) => {
+    for (const accept of [false, true]) {
+      const target = repo("endpoint");
+      const extension = load({ apiBaseUrl: baseUrl + "?token=sensitive-query", apiKey: "*****" }, [target], "diff", "en", {
+        secureKey: "private-key", migrate: accept,
+      });
+      const original = extension.observed.secretValues.get("aiCommit.apiKey");
+      extension.observed.secretValues.set("aiCommit.apiKey", boundKey(baseUrl, "private-key"));
+      const before = headers.length;
+      await extension.generateCommitMessage(target);
+      assert.equal(headers.length - before, accept ? 1 : 0);
+      assert.equal(extension.observed.warnings.length, 1);
+      assert.ok(extension.observed.warnings[0].includes("127.0.0.1"));
+      assert.ok(!extension.observed.warnings[0].includes("sensitive-query"));
+      assert.ok(!extension.observed.warnings[0].includes("private-key"));
+      if (accept) {
+        assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), original);
+        await extension.generateCommitMessage(target);
+        assert.equal(extension.observed.warnings.length, 1);
+      } else {
+        assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), boundKey(baseUrl, "private-key"));
+        assert.equal(target.inputBox.value, "");
+      }
+    }
+  });
+});
+
+test("legacy secure keys bind atomically only after destination approval", async () => {
+  for (const accept of [false, true]) {
+    let requests = 0;
+    await withServer((_req, res) => { requests++; reply(res); }, async (baseUrl) => {
+      const target = repo("legacy");
+      const extension = load({ apiBaseUrl: baseUrl }, [target], "diff", "en", {
+        secureKey: "legacy-key", legacyStored: true, migrate: accept,
+      });
+      await extension.generateCommitMessage(target);
+      assert.equal(requests, accept ? 1 : 0);
+      assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), accept ? boundKey(baseUrl, "legacy-key") : "legacy-key");
+    });
+  }
+});
+
+test("migration removes matching plaintext copies but retains different keys", async () => {
+  await withServer((_req, res) => reply(res), async (baseUrl) => {
+    for (const globalValue of ["same-key", "different-key"]) {
+      const config = { apiBaseUrl: baseUrl, apiKey: globalValue, keyWorkspaceValue: "same-key" };
+      const extension = load(config, [repo("copies")], "diff", "en", { migrate: true });
+      await extension.generateCommitMessage();
+      assert.equal(config.keyWorkspaceValue, "*****");
+      assert.equal(config.apiKey, globalValue === "same-key" ? undefined : "different-key");
+      assert.equal(storedKey(extension), "same-key");
+      if (globalValue !== "same-key") assert.ok(extension.observed.warnings.some(msg => /plaintext/i.test(msg)));
+    }
+  });
+});
+
+test("setting or clearing a key invalidates a pending migration without waiting for its dialog", async () => {
+  for (const command of ["ai-commit.setApiKey", "ai-commit.clearApiKey"]) {
+    const answer = deferred();
+    const prompted = deferred();
+    const extension = load({ apiKey: "old-key" }, [], "diff", "en", {
+      migrate: items => { prompted.resolve(items); return answer.promise; }, input: "new-key",
+    });
+    const pending = extension.getApiKey("https://api.deepseek.com/v1");
+    const items = await prompted.promise;
+    const rejected = assert.rejects(pending, /changed|cancel/i);
+    await extension.observed.commands.get(command)();
+    answer.resolve(items[0]);
+    await rejected;
+    assert.equal(storedKey(extension), command.includes("setApiKey") ? "new-key" : undefined);
+  }
+});
+
+test("configuration changes while confirming a destination prevent sending or rebinding", async () => {
+  const answer = deferred();
+  const prompted = deferred();
+  const config = { apiBaseUrl: "https://first.example/v1", apiKey: "*****" };
+  const extension = load(config, [], "diff", "en", { secureKey: "test-key", legacyStored: true,
+    migrate: items => { prompted.resolve(items); return answer.promise; },
+  });
+  const pending = extension.getApiKey(config.apiBaseUrl);
+  const items = await prompted.promise;
+  const rejected = assert.rejects(pending, /changed|cancel/i);
+  config.apiBaseUrl = "https://second.example/v1";
+  extension.changeConfiguration();
+  answer.resolve(items[0]);
+  await rejected;
+  assert.equal(extension.observed.secretValues.get("aiCommit.apiKey"), "test-key");
+});
+
+test("plaintext authorization is specific to a key and destination and dismissal sends nothing", async () => {
+  let requests = 0;
+  await withServer((_req, res) => { requests++; reply(res); }, async (baseUrl) => {
+    const config = { apiBaseUrl: baseUrl, apiKey: "plaintext" };
+    const target = repo("session");
+    const extension = load(config, [target], "diff", "en", { migrate: items => items[1] });
+    await extension.generateCommitMessage(target);
+    await extension.generateCommitMessage(target);
+    assert.equal(requests, 2);
+    assert.equal(extension.observed.warnings.length, 1);
+    assert.equal(storedKey(extension), undefined);
+    config.apiBaseUrl = baseUrl + "?changed=1";
+    extension.changeConfiguration();
+    extension.vscode.window.showWarningMessage = async () => undefined;
+    await extension.generateCommitMessage(target);
+    assert.equal(requests, 2);
+  });
+});
+
+test("Git preflight has a cancellation notification and cancellation allows retry", async () => {
+  await withServer((_req, res) => reply(res), async (baseUrl) => {
+    const started = deferred();
+    const release = deferred();
+    const target = repo("cancel-git");
+    const extension = load({ apiBaseUrl: baseUrl }, [target], async (options, count) => {
+      if (count !== 1) return "diff";
+      started.resolve(options);
+      return Promise.race([release.promise, new Promise((_, reject) => options.abort?.addEventListener("abort", () => reject(new Error("Abort signal received")), { once: true }))]);
+    });
+    const work = extension.generateCommitMessage(target);
+    const options = await started.promise;
+    try {
+      assert.equal(extension.observed.progress.length, 1);
+      assert.equal(extension.observed.progress[0].options.cancellable, true);
+      assert.ok(options.abort instanceof AbortSignal);
+      assert.deepEqual(JSON.parse(JSON.stringify(options.timeout)), { block: 30000, stdOut: false, stdErr: false });
+      extension.observed.progress[0].cancel();
+    } finally { release.resolve("diff"); await work; }
+    assert.equal(target.inputBox.value, "");
+    assert.equal(extension.observed.errors.length, 0);
+    await extension.generateCommitMessage(target);
+    assert.equal(target.inputBox.value, "fix: generated message");
+  });
+});
+
+test("authentication dialogs run after progress closes and the repository lock is released", async () => {
+  for (const status of [401, 403]) {
+    let requests = 0;
+    const answer = deferred();
+    const prompted = deferred();
+    await withServer((_req, res) => {
+      requests++;
+      if (requests === 1) { res.writeHead(status); res.end("denied"); } else reply(res);
+    }, async (baseUrl) => {
+      const target = repo("auth-lock");
+      const extension = load({ apiBaseUrl: baseUrl }, [target], "diff", "en", {
+        errorAction: () => { prompted.resolve(); return answer.promise; },
+      });
+      const first = extension.generateCommitMessage(target);
+      await prompted.promise;
+      try {
+        assert.ok(extension.observed.progress.every(p => p.closed && p.disposed));
+        await extension.generateCommitMessage(target);
+        assert.equal(requests, 2);
+        assert.equal(target.inputBox.value, "fix: generated message");
+      } finally { answer.resolve(undefined); await first; }
+    });
+  }
+});
+
+test("staged changes during confirmation or the API call discard stale results", async () => {
+  for (const phase of ["confirmation", "api", "clipboard"]) {
+    let staged = "original staged diff";
+    let requests = 0;
+    await withServer((_req, res) => { requests++; staged = "new staged diff"; reply(res); }, async (baseUrl) => {
+      const target = repo("stale");
+      const extension = load({ apiBaseUrl: baseUrl, apiKey: phase === "confirmation" ? "test-key" : "" }, [target], () => staged, "en", {
+        gitUnavailable: phase === "clipboard",
+        migrate: items => { staged = "changed before send"; return items[0]; },
+      });
+      await extension.generateCommitMessage(target);
+      assert.equal(requests, phase === "confirmation" ? 0 : 1);
+      assert.equal(target.inputBox.value, "");
+      assert.equal(extension.observed.clipboard.length, 0);
+      assert.ok(extension.observed.infos.some(msg => /staged.*changed/i.test(msg)));
+    });
+  }
+});
+
+test("missing or disabled Git APIs fall back to the workspace and clipboard", async () => {
+  for (const option of ["gitUnavailable", "gitDisabled", "gitApiError"]) {
+    await withServer((_req, res) => reply(res), async (baseUrl) => {
+      const extension = load({ apiBaseUrl: baseUrl }, [], "diff", "en", { [option]: true });
+      await extension.generateCommitMessage();
+      assert.deepEqual(extension.observed.clipboard, ["fix: generated message"]);
+      assert.equal(extension.observed.errors.length, 0);
+    });
+  }
+});
+
+test("response size limits include success and error bodies and release resources", async () => {
+  const limit = 1024 * 1024;
+  for (const status of [200, 500]) {
+    for (const excess of [0, 1]) {
+      const ending = status === 200 ? JSON.stringify({ choices: [{ message: { content: "fix: bounded" } }] }) : "error";
+      const body = " ".repeat(limit - Buffer.byteLength(ending) + excess) + ending;
+      await withServer((_req, res) => {
+        res.writeHead(status);
+        res.write(body.slice(0, limit - 1));
+        setImmediate(() => res.end(body.slice(limit - 1)));
+      }, async (baseUrl) => {
+        const extension = load();
+        const controller = new AbortController();
+        const result = extension.callLLM(baseUrl, "", "test", "", -1, "diff", 2000, controller.signal);
+        if (excess) await assert.rejects(result, /too large|limit/i);
+        else if (status === 200) assert.equal(await result, "fix: bounded");
+        else await assert.rejects(result, /500/);
+        assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+      });
+    }
+  }
+});
+
+test("empty-stage hints use placeholders and restore on staging, retry, close or deactivation", async () => {
+  for (const language of ["en", "zh-cn"]) {
+    for (const restore of ["staging", "retry", "close", "deactivate"]) {
+      const target = repo("hint");
+      const extension = load({}, [target], "", language);
+      await extension.generateCommitMessage(target);
+      assert.equal(target.inputBox.value, "");
+      assert.equal(target.inputBox.placeholder, language === "zh-cn" ? "请先暂存更改，再生成提交信息" : "Stage your changes first, then generate a commit message");
+      assert.equal(extension.observed.warnings.length, 1);
+      assert.equal(target.listenerCount(), 1);
+      if (restore === "staging") { target.state.indexChanges = [{}]; target.changeState(); }
+      if (restore === "close") extension.closeRepo(target);
+      if (restore === "deactivate") extension.deactivate();
+      if (restore === "retry") {
+        extension.vscode.window.withProgress = async () => { throw new Error("test stops the retry after restoring the hint"); };
+        await extension.generateCommitMessage(target);
+      }
+      assert.equal(target.inputBox.placeholder, "Original placeholder");
+      assert.equal(target.listenerCount(), 0);
+    }
+  }
+});
+
+test("command-palette and value-only Git input boxes use notification-only empty hints", async () => {
+  for (const palette of [false, true]) {
+    const target = repo("palette");
+    if (!palette) delete target.inputBox.placeholder;
+    const extension = load({}, [target], "", "en", { noChanges: true });
+    await extension.generateCommitMessage(palette ? undefined : target);
+    assert.equal(target.inputBox.value, "");
+    assert.equal(target.listenerCount(), 0);
+    assert.equal(extension.observed.warnings.length, 1);
+    assert.equal(target.inputBox.placeholder, palette ? "Original placeholder" : undefined);
+  }
+});
+
+test("a clean repository shows the optimized no-changes placeholder without overwriting drafts", async () => {
+  const target = repo("clean");
+  const extension = load({}, [target], "", "en", { noChanges: true });
+  await extension.generateCommitMessage(target);
+  assert.equal(target.inputBox.placeholder, "There are no changes to commit");
+  target.inputBox.value = "my existing draft";
+  await extension.generateCommitMessage(target);
+  assert.equal(target.inputBox.value, "my existing draft");
+  assert.equal(target.inputBox.placeholder, "Original placeholder");
+});
+
+test("clearing or changing credentials while the password input is open invalidates that input", async () => {
+  for (const change of ["clear", "setting"]) {
+    const prompted = deferred();
+    const answer = deferred();
+    const config = { apiKey: "*****" };
+    const extension = load(config, [], "diff", "en", {
+      secureKey: "old-key", input: () => { prompted.resolve(); return answer.promise; },
+    });
+    const pending = extension.observed.commands.get("ai-commit.setApiKey")();
+    await prompted.promise;
+    if (change === "clear") await extension.observed.commands.get("ai-commit.clearApiKey")();
+    else { config.apiKey = "changed-key"; extension.changeConfiguration(); }
+    answer.resolve("stale-key");
+    await pending;
+    assert.notEqual(storedKey(extension), "stale-key");
+    assert.ok(extension.observed.errors.some(message => /changed/i.test(message)));
+  }
+});
+
+test("legacy keys that happen to be JSON values remain readable", async () => {
+  for (const key of ["123", '"key"']) {
+    const extension = load({}, [], "diff", "en", { secureKey: key, legacyStored: true, migrate: true });
+    assert.equal(await extension.getApiKey("https://api.deepseek.com/v1"), key);
+    assert.equal(storedKey(extension), key);
+  }
+});
+
+test("response limits count raw bytes even for invalid UTF-8", async () => {
+  await withServer((_req, res) => {
+    res.writeHead(500);
+    res.end(Buffer.alloc(1024 * 1024, 0xff));
+  }, async (baseUrl) => {
+    await assert.rejects(load().callLLM(baseUrl, "", "test", "", -1, "diff", 2000), /500/);
+  });
+});
+
+// Load the installed library unchanged, with only its spawn boundary redirected
+// to a real Node child process and its 30-second timer shortened for the test.
+function realGitFixture(script) {
+  const entry = require.resolve("simple-git");
+  const libraryRequire = createRequire(entry);
+  const calls = [];
+  const ready = deferred();
+  const context = {
+    exports: {}, Buffer, process, console, clearTimeout,
+    setTimeout: (callback, delay, ...args) => setTimeout(callback, delay === 30000 ? 600 : delay, ...args),
+    require: name => name === "node:child_process" ? { spawn: (binary, args, options) => {
+      calls.push({ binary, args, options });
+      const child = spawn(process.execPath, ["-e", script], options);
+      child.stdout.once("data", () => ready.resolve());
+      return child;
+    } } : libraryRequire(name),
+  };
+  vm.runInNewContext(fs.readFileSync(entry, "utf8"), context);
+  return { realGit: context.exports, calls, ready };
+}
+
+test("real simple-git accepts an absolute binary with spaces and passes it as one executable", async () => {
+  const binary = path.resolve("Git With Spaces", "git.exe");
+  assert.throws(() => require("simple-git").simpleGit({ binary }), /binary|spaces|custom/i);
+  const fixture = realGitFixture("process.stdout.write('staged diff')");
+  const extension = load({ gitPath: binary }, [], "", "en", fixture);
+  assert.equal(await extension.getDiffStaged(process.cwd()), "staged diff");
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.calls[0].binary, binary);
+  assert.deepEqual(Array.from(fixture.calls[0].args), ["diff", "--staged"]);
+  assert.notEqual(fixture.calls[0].options.shell, true);
+});
+
+test("real simple-git deadlines ignore continuous output and cancellation kills the child", async () => {
+  for (const cancel of [false, true]) {
+    const fixture = realGitFixture("process.stdout.write('ready'); setInterval(() => process.stdout.write('output'), 10)");
+    const extension = load({}, [], "", "en", fixture);
+    const controller = new AbortController();
+    const work = extension.getDiffStaged(process.cwd(), controller.signal);
+    const rejected = assert.rejects(work, error => cancel ? /abort/i.test(error.message) : error.plugin === "timeout");
+    await fixture.ready.promise;
+    if (cancel) controller.abort();
+    await rejected;
+    assert.equal(fixture.calls.length, 1);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  }
+});
+
+test("migration checks fresh configuration rather than an old VS Code configuration snapshot", async () => {
+  const answer = deferred();
+  const prompted = deferred();
+  const config = { apiKey: "old-key" };
+  const extension = load(config, [], "diff", "en", {
+    snapshotConfig: true, migrate: items => { prompted.resolve(items); return answer.promise; },
+  });
+  const pending = extension.getApiKey("https://api.deepseek.com/v1");
+  const items = await prompted.promise;
+  const rejected = assert.rejects(pending, /changed/i);
+  config.apiKey = "changed-key";
+  extension.changeConfiguration();
+  answer.resolve(items[0]);
+  await rejected;
+  assert.equal(storedKey(extension), undefined);
+  assert.equal(config.apiKey, "changed-key");
+});
+
+test("delayed migration storage and key clearing are serialized and remove all masks", async () => {
+  const started = deferred();
+  const release = deferred();
+  const config = { apiKey: "same-key", keyWorkspaceValue: "same-key" };
+  const extension = load(config, [], "diff", "en", { migrate: true,
+    storeError: async () => { started.resolve(); await release.promise; },
+  });
+  const pending = extension.getApiKey("https://api.deepseek.com/v1");
+  await started.promise;
+  const clear = extension.observed.commands.get("ai-commit.clearApiKey")();
+  assert.ok(!extension.observed.secretOps.includes("delete"));
+  const rejected = assert.rejects(pending, /changed/i);
+  release.resolve();
+  await Promise.all([rejected, clear]);
+  assert.equal(storedKey(extension), undefined);
+  assert.equal(config.apiKey, "same-key");
+  assert.equal(config.keyWorkspaceValue, "same-key");
+  config.apiKey = config.keyWorkspaceValue = "*****";
+  await extension.observed.commands.get("ai-commit.clearApiKey")();
+  assert.equal(config.apiKey, undefined);
+  assert.equal(config.keyWorkspaceValue, undefined);
+});
+
+test("password prompt shows the destination without query values", async () => {
+  const extension = load({ apiBaseUrl: "https://example.com/v1?token=private-value" }, [], "diff", "zh-cn", { input: "test-key" });
+  await extension.observed.commands.get("ai-commit.setApiKey")();
+  const input = extension.observed.inputOptions[0];
+  assert.equal(input.password, true);
+  assert.match(input.prompt, /https:\/\/example.com\/v1\/chat\/completions/);
+  assert.doesNotMatch(input.prompt, /private-value|test-key/);
+});
+
+test("Git summary cancellation skips the request and releases progress and lock", async () => {
+  let requests = 0;
+  await withServer((_req, res) => { requests++; reply(res); }, async baseUrl => {
+    const started = deferred();
+    const release = deferred();
+    const extension = load({ apiBaseUrl: baseUrl, maxDiffChars: 1 }, [repo("summary")], "long staged diff", "en", {
+      summary: options => { started.resolve(options); return release.promise; },
+    });
+    const pending = extension.generateCommitMessage();
+    const options = await started.promise;
+    extension.observed.progress.at(-1).cancel();
+    assert.equal(options.abort.aborted, true);
+    release.resolve({ files: [] });
+    await pending;
+    assert.equal(requests, 0);
+    assert.ok(extension.observed.progress.every(progress => progress.closed && progress.disposed));
+    assert.equal(extension.observed.errors.length, 0);
   });
 });

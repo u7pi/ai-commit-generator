@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Bind the single stored API key atomically to a normalized request endpoint. Confirm legacy upgrades and destination changes, hide sensitive query values, and make dismissed dialogs cancel generation.
+- Serialize key writes/clears, invalidate stale dialogs, remove matching plaintext copies across accessible scopes, and report preserved differing values or cleanup failures. Explicit plaintext authorization applies only to the same key/endpoint in the current window. Downgrading requires setting the key again.
+- Support absolute Git paths containing spaces, cancel all Git reads, and enforce a fixed 30-second deadline. Recheck the full staged diff before requests and output; discard stale results and preserve edited drafts.
+- End progress and release repository locks before authentication prompts, fall back safely when the Git API is unavailable, and limit success/error response bodies to 1 MiB of received bytes.
+- Default the API URL to DeepSeek while retaining explicit settings. Keep no-stage notifications and use temporary SCM placeholders instead of modifying commit text; restore placeholders and listeners on staging, retry, close, and deactivation.
+- Expand regression tests, including real simple-git process tests, and synchronize English/Chinese configuration and guides.
+
 ## 0.3.2
 
 - Once the API key lives in SecretStorage, the `aiCommit.apiKey` settings field shows `*****` instead of being cleared, so the Settings UI always reflects that a key is stored. Keys saved through migration and through **Set API Key** both write the mask; **Clear Stored API Key** also removes it.

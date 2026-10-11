@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
-import { relative } from "path";
+import { isAbsolute, relative } from "path";
 import { simpleGit, DiffResult } from "simple-git";
 
 // ─── Logger ─────────────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ function getConfig() {
   // default prompt still applies until the user edits it.
   const rawPrompt = cfg.get<string>("systemPrompt", "");
   const config = {
-    apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.openai.com/v1"),
+    apiBaseUrl: cfg.get<string>("apiBaseUrl", "https://api.deepseek.com/v1"),
     model: cfg.get<string>("model", "deepseek-flash"),
     systemPrompt: rawPrompt === DEFAULT_SYSTEM_PROMPT_EN ? "" : rawPrompt,
     temperature: cfg.get<number>("temperature", -1),
@@ -157,135 +157,260 @@ function getConfig() {
 }
 
 const API_KEY = "aiCommit.apiKey";
-// Placeholder written back to the settings field once the key lives in
-// SecretStorage, so the Settings UI shows a masked key instead of an empty box.
+// Settings mirror only; credentials and their destination live in SecretStorage.
 const MASKED_KEY = "*****";
+interface KeyRecord { version: 1; key: string; endpoint: string; }
 let secrets: vscode.SecretStorage;
-// Plaintext settings value we already prompted for; a changed value prompts again.
-let promptedValue: string | undefined;
-let migration: Promise<string> | undefined;
+let keyRevision = 0;
+let keyWrites: Promise<unknown> = Promise.resolve();
+let migration: { signature: string; promise: Promise<string> } | undefined;
+let plaintextAuthorization: { key: string; endpoint: string } | undefined;
+
+function serializeKeyWrite<T>(work: () => Promise<T>): Promise<T> {
+  const result = keyWrites.then(work);
+  keyWrites = result.catch(() => {});
+  return result;
+}
+
+function apiEndpoint(baseUrl: string): string {
+  const url = getApiUrl(baseUrl);
+  return url.origin + url.pathname + url.search;
+}
+
+function currentEndpoint(): string {
+  return apiEndpoint(vscode.workspace.getConfiguration("aiCommit").get<string>("apiBaseUrl", "https://api.deepseek.com/v1"));
+}
+
+function destinationLabel(baseUrl: string, key = ""): string {
+  const url = getApiUrl(baseUrl);
+  const label = url.origin + url.pathname + (url.search ? t("（查询参数已隐藏）", " (query values hidden)") : "");
+  return key ? label.split(key).join("[redacted]") : label;
+}
+
+async function readStoredKey(): Promise<{ raw: string | undefined; key: string; endpoint?: string }> {
+  let raw: string | undefined;
+  try {
+    raw = await secrets.get(API_KEY);
+  } catch {
+    throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
+  }
+  if (!raw) return { raw, key: "" };
+  let record: any;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    return { raw, key: raw };
+  }
+  if (record === null || typeof record !== "object" || !("version" in record)) return { raw, key: raw };
+  if (record?.version !== 1 || typeof record.key !== "string" || !record.key || typeof record.endpoint !== "string") {
+    throw new Error(t("安全存储中的密钥记录无效，请重新设置 API Key。", "Invalid stored key record. Set the API key again."));
+  }
+  return { raw, key: record.key, endpoint: record.endpoint };
+}
 
 function keySettingTarget(config: vscode.WorkspaceConfiguration): vscode.ConfigurationTarget {
   return config.inspect<string>("apiKey")?.workspaceValue !== undefined
     ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
 }
 
-async function writeMaskedKey(config: vscode.WorkspaceConfiguration): Promise<void> {
-  await config.update("apiKey", MASKED_KEY, keySettingTarget(config));
+async function writeMaskedKey(config: vscode.WorkspaceConfiguration, key: string): Promise<void> {
+  const inspected = config.inspect<string>("apiKey");
+  const target = keySettingTarget(config);
+  let failed = false;
+  try {
+    if (config.get<string>("apiKey", "") !== MASKED_KEY) await config.update("apiKey", MASKED_KEY, target);
+  } catch {
+    failed = true;
+  }
+  let otherPlaintext = false;
+  for (const [scope, value] of [
+    [vscode.ConfigurationTarget.Global, inspected?.globalValue],
+    [vscode.ConfigurationTarget.Workspace, inspected?.workspaceValue],
+  ] as const) {
+    if (scope === target || !value?.trim() || value.trim() === MASKED_KEY) continue;
+    if (value.trim() !== key) {
+      otherPlaintext = true;
+      continue;
+    }
+    try {
+      await config.update("apiKey", undefined, scope);
+    } catch {
+      failed = true;
+    }
+  }
+  if (failed) {
+    vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置掩码或同值明文副本未能更新，请检查用户和工作区设置。", "AI Commit: Key saved securely, but masking or plaintext-copy cleanup failed. Check user and workspace settings."));
+  }
+  if (otherPlaintext) {
+    vscode.window.showWarningMessage(t("AI Commit：其他配置层中仍有不同的明文 API Key，已保留，请检查。", "AI Commit: A different plaintext API key remains in another settings scope. It was preserved; please check it."));
+  }
 }
 
 async function setApiKey() {
+  let endpoint: string;
+  let label: string;
+  const initialRevision = keyRevision;
+  const setting = vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "");
+  let stored: string | undefined;
+  try {
+    await keyWrites;
+    try {
+      stored = await secrets.get(API_KEY);
+    } catch {
+      throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
+    }
+    endpoint = currentEndpoint();
+    label = destinationLabel(vscode.workspace.getConfiguration("aiCommit").get<string>("apiBaseUrl", "https://api.deepseek.com/v1"));
+  } catch (err) {
+    vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+    return;
+  }
   const key = await vscode.window.showInputBox({
     title: t("Simple AI Committer：设置 API Key", "Simple AI Committer: Set API Key"),
-    prompt: t("密钥将保存在 VS Code 安全存储中。", "The key will be saved in VS Code SecretStorage."),
+    prompt: t("密钥将安全保存并绑定到：", "The key will be saved securely and bound to: ") + label,
     password: true,
     ignoreFocusOut: true,
   });
   if (!key?.trim()) return;
   try {
-    await secrets.store(API_KEY, key.trim());
-  } catch {
-    vscode.window.showErrorMessage(t("AI Commit：无法安全保存 API Key。", "AI Commit: Could not save the API key securely."));
-    return;
+    await serializeKeyWrite(async () => {
+      let current: string | undefined;
+      try {
+        current = await secrets.get(API_KEY);
+      } catch {
+        throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
+      }
+      if (initialRevision !== keyRevision || currentEndpoint() !== endpoint || current !== stored ||
+          vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting) throw credentialsChanged();
+      const revision = ++keyRevision;
+      plaintextAuthorization = undefined;
+      try {
+        await secrets.store(API_KEY, JSON.stringify({ version: 1, key: key.trim(), endpoint } satisfies KeyRecord));
+      } catch {
+        throw new Error(t("AI Commit：无法安全保存 API Key。", "AI Commit: Could not save the API key securely."));
+      }
+      if (revision !== keyRevision || currentEndpoint() !== endpoint ||
+          vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting) throw credentialsChanged();
+      await writeMaskedKey(vscode.workspace.getConfiguration("aiCommit"), key.trim());
+      if (revision !== keyRevision || currentEndpoint() !== endpoint) throw credentialsChanged();
+    });
+    vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存并绑定到当前接口。", "AI Commit: API key saved securely and bound to the current endpoint."));
+  } catch (err) {
+    vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
   }
-  // Mirror the stored key in the settings field as a mask, so the Settings UI
-  // shows ***** instead of a stale plaintext value or an empty box.
-  try {
-    await writeMaskedKey(vscode.workspace.getConfiguration("aiCommit"));
-  } catch {
-    vscode.window.showErrorMessage(t("AI Commit：API Key 已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: API key saved securely, but the settings field could not be updated to the masked display."));
-    return;
-  }
-  vscode.window.showInformationMessage(t("AI Commit：API Key 已安全保存。", "AI Commit: API key saved securely."));
 }
 
 async function clearApiKey() {
+  ++keyRevision;
+  plaintextAuthorization = undefined;
   try {
-    await secrets.delete(API_KEY);
-  } catch {
-    vscode.window.showErrorMessage(t("AI Commit：无法清除安全存储中的 API Key。", "AI Commit: Could not clear the stored API key."));
-    return;
+    await serializeKeyWrite(async () => {
+      try {
+        await secrets.delete(API_KEY);
+      } catch {
+        throw new Error(t("AI Commit：无法清除安全存储中的 API Key。", "AI Commit: Could not clear the stored API key."));
+      }
+      const config = vscode.workspace.getConfiguration("aiCommit");
+      const inspected = config.inspect<string>("apiKey");
+      let failed = false;
+      for (const [scope, value] of [
+        [vscode.ConfigurationTarget.Global, inspected?.globalValue],
+        [vscode.ConfigurationTarget.Workspace, inspected?.workspaceValue],
+      ] as const) {
+        if (value?.trim() !== MASKED_KEY) continue;
+        try {
+          await config.update("apiKey", undefined, scope);
+        } catch {
+          failed = true;
+        }
+      }
+      if (failed) throw new Error(t("AI Commit：密钥已清除，但部分设置掩码未能移除，请检查设置。", "AI Commit: Key cleared, but some settings masks could not be removed. Check settings."));
+    });
+    vscode.window.showInformationMessage(t("AI Commit：已清除安全密钥和设置掩码；已有明文设置仍会生效，并需授权使用。", "AI Commit: Cleared the stored key and settings masks; existing plaintext settings still apply and require authorization."));
+  } catch (err) {
+    vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
   }
-  // Drop the ***** mirror so the settings field shows empty again; a real
-  // plaintext setting is left untouched and stays effective.
-  const config = vscode.workspace.getConfiguration("aiCommit");
-  if (config.get<string>("apiKey", "") === MASKED_KEY) {
-    try {
-      await config.update("apiKey", undefined, keySettingTarget(config));
-    } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥已清除，但设置栏中的掩码未能移除。", "AI Commit: Key cleared, but the settings mask could not be removed."));
-      return;
-    }
-  }
-  vscode.window.showInformationMessage(t("AI Commit：已清除安全存储中的密钥及设置栏掩码；已有明文设置仍会生效。", "AI Commit: Cleared the stored key and the settings mask; any plaintext setting still applies."));
 }
 
-async function getApiKey(): Promise<string> {
-  let stored: string | undefined;
-  try {
-    stored = await secrets.get(API_KEY);
-  } catch {
-    throw new Error(t("无法读取安全存储中的 API Key。", "Could not read the stored API key."));
-  }
+function credentialsChanged(): Error {
+  return new Error(t("API Key 或接口地址已变更，请重新生成。", "The API key or endpoint changed. Generate again."));
+}
+
+async function getApiKey(baseUrl: string): Promise<string> {
+  const revision = keyRevision;
+  await keyWrites;
+  const stored = await readStoredKey();
   const config = vscode.workspace.getConfiguration("aiCommit");
-  // Trim like the Set API Key command does: keys copied with stray whitespace
-  // would otherwise be stored and sent verbatim, failing authentication.
-  const legacy = config.get<string>("apiKey", "").trim();
-  if (legacy === MASKED_KEY) return stored ?? "";
-  if (!legacy) return stored ?? "";
-  if (stored && legacy === stored) {
-    // The settings field merely duplicates the stored key — show the mask.
-    try {
-      await writeMaskedKey(config);
-    } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
+  const setting = config.get<string>("apiKey", "");
+  const plaintext = setting.trim() === MASKED_KEY ? "" : setting.trim();
+  const key = plaintext || stored.key;
+  if (!key) return "";
+  const endpoint = apiEndpoint(baseUrl);
+  const check = async () => {
+    const current = await readStoredKey();
+    if (revision !== keyRevision || currentEndpoint() !== endpoint ||
+        vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting || current.raw !== stored.raw) {
+      throw credentialsChanged();
     }
-    return stored;
-  }
-  if (migration) return migration;
-  if (promptedValue === legacy) return stored ?? legacy;
-  promptedValue = legacy;
-  migration = (async () => {
-    if (stored) {
-      // A plaintext value that differs from the stored key is the user's
-      // latest input: replace the stored key and re-mask the field. Prompting
-      // here used to keep the old key on "Not now", which failed generation
-      // with a confusing 401.
-      try {
-        await secrets.store(API_KEY, legacy);
-      } catch {
-        vscode.window.showErrorMessage(t("AI Commit：无法安全保存 API Key，仍使用安全存储中的原密钥。", "AI Commit: Could not save the API key securely; the stored key is still used."));
-        return stored ?? legacy;
+  };
+  const signature = JSON.stringify([revision, stored.raw, setting, endpoint]);
+  if (migration?.signature === signature) return migration.promise;
+  const operation = (async () => {
+    await check();
+    let persist = true;
+    const sessionApproved = plaintextAuthorization?.key === key && plaintextAuthorization.endpoint === endpoint;
+    if (!stored.key && !sessionApproved) {
+      const migrate = t("迁移并掩码", "Migrate and mask");
+      const once = t("本窗口使用明文，不迁移", "Use plaintext this window, without migrating");
+      const choice = await vscode.window.showWarningMessage(
+        t("AI Commit：是否将明文密钥用于以下接口？迁移后将安全保存并掩码：", "AI Commit: Authorize the plaintext key for this endpoint? Migration saves it securely and masks settings: ") + destinationLabel(baseUrl, key),
+        { modal: true }, migrate, once,
+      );
+      if (choice !== migrate && choice !== once) throw abortError();
+      persist = choice === migrate;
+    } else if (stored.key && stored.endpoint !== endpoint) {
+      const allow = t("允许并绑定到此接口", "Allow and bind to this endpoint");
+      const choice = await vscode.window.showWarningMessage(
+        t("AI Commit：现有密钥尚未绑定此接口。是否允许发送并重新绑定？路径或查询参数变化也需要确认：", "AI Commit: The stored key is not bound to this endpoint. Allow sending and rebind it? Path or query changes also require approval: ") + destinationLabel(baseUrl, key),
+        { modal: true }, allow,
+      );
+      if (choice !== allow) throw abortError();
+    } else if (sessionApproved) {
+      persist = false;
+    }
+    return serializeKeyWrite(async () => {
+      await check();
+      let operationRevision = revision;
+      if (!persist) {
+        plaintextAuthorization = { key, endpoint };
+        return key;
       }
-      try {
-        await writeMaskedKey(config);
-      } catch {
-        vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
+      if (key !== stored.key || endpoint !== stored.endpoint) {
+        const writeRevision = ++keyRevision;
+        operationRevision = writeRevision;
+        try {
+          await secrets.store(API_KEY, JSON.stringify({ version: 1, key, endpoint } satisfies KeyRecord));
+        } catch {
+          throw new Error(t("AI Commit：无法安全保存或绑定 API Key，原密钥及设置已保留。", "AI Commit: Could not securely save or bind the API key; the original key and settings were preserved."));
+        }
+        if (writeRevision !== keyRevision || currentEndpoint() !== endpoint ||
+            vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "") !== setting) throw credentialsChanged();
+        if (stored.key && plaintext && plaintext !== stored.key) {
+          vscode.window.showInformationMessage(t("AI Commit：设置中的新 API Key 已更新安全存储。", "AI Commit: The new settings API key updated secure storage."));
+        }
       }
-      vscode.window.showInformationMessage(t("AI Commit：检测到设置栏中的新 API Key，已更新安全存储。", "AI Commit: Detected the new settings API key and updated secure storage."));
-      return legacy;
-    }
-    const migrate = t("迁移并掩码", "Migrate and mask");
-    const message = t("AI Commit：发现明文 API Key，是否迁入安全存储并将此栏改为 ***** 显示？", "AI Commit: A plaintext API key was found. Move it to secure storage and show ***** in this field instead?");
-    const choice = await vscode.window.showWarningMessage(message, migrate, t("暂不", "Not now"));
-    if (choice !== migrate) return stored ?? legacy;
-    try {
-      await secrets.store(API_KEY, legacy);
-    } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥迁移失败，原设置已保留。", "AI Commit: Key migration failed; the original setting was preserved."));
-      return stored ?? legacy;
-    }
-    try {
-      await writeMaskedKey(config);
-    } catch {
-      vscode.window.showErrorMessage(t("AI Commit：密钥已安全保存，但设置栏未能更新为掩码显示。", "AI Commit: Key saved securely, but the settings field could not be updated to the masked display."));
-    }
-    return legacy;
+      if (plaintext || key !== stored.key || endpoint !== stored.endpoint || setting.trim() === MASKED_KEY) {
+        await writeMaskedKey(config, key);
+      }
+      if (operationRevision !== keyRevision || currentEndpoint() !== endpoint) throw credentialsChanged();
+      return key;
+    });
   })();
+  migration = { signature, promise: operation };
   try {
-    return await migration;
+    return await operation;
   } finally {
-    migration = undefined;
+    if (migration?.promise === operation) migration = undefined;
   }
 }
 
@@ -353,9 +478,18 @@ async function selectApiBaseUrl() {
 
 // ─── Git Helpers ────────────────────────────────────────────────────────────
 
+function getGitApi(): any {
+  try {
+    const extension = vscode.extensions.getExtension("vscode.git")?.exports;
+    return extension?.enabled === false ? null : extension?.getAPI(1) ?? null;
+  } catch {
+    Logger.warn("Built-in Git API unavailable; using workspace fallback");
+    return null;
+  }
+}
+
 async function getRepo(arg?: any): Promise<any> {
-  const gitExtension = vscode.extensions.getExtension("vscode.git")?.exports;
-  const api = gitExtension?.getAPI(1);
+  const api = getGitApi();
   if (!api) return null;
 
   if (arg?.rootUri) {
@@ -369,13 +503,19 @@ async function getRepo(arg?: any): Promise<any> {
   return api.repositories?.[0] ?? null;
 }
 
-async function getDiffStaged(rootPath: string): Promise<string> {
-  const git = simpleGit({
+function createGit(rootPath: string, signal?: AbortSignal) {
+  const binary = ConfigManager.getInstance().get<string>("gitPath", "git");
+  return simpleGit({
     baseDir: rootPath,
-    binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
+    binary,
+    abort: signal,
+    timeout: { block: 30000, stdOut: false, stdErr: false },
+    unsafe: { allowUnsafeCustomBinary: isAbsolute(binary) && /\s/.test(binary) },
   });
-  const diff = await git.diff(["--staged"]);
-  return diff;
+}
+
+async function getDiffStaged(rootPath: string, signal?: AbortSignal): Promise<string> {
+  return createGit(rootPath, signal).diff(["--staged"]);
 }
 
 function truncateDiff(diff: string, maxChars: number, summary?: DiffResult): string {
@@ -483,7 +623,18 @@ function callLLM(
     const onAbort = () => finish(abortError());
     const transport = parsedUrl.protocol === "https:" ? https : http;
     const req = transport.request(options, (res) => {
-      res.setEncoding("utf8");
+      let receivedBytes = 0;
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        receivedBytes += chunk.length;
+        if (receivedBytes > 1024 * 1024) {
+          finish(new Error(t("API 响应过大，超过 1 MiB 上限。", "API response too large; the limit is 1 MiB.")));
+          res.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
       res.on("error", (err) => finish(err));
       res.on("aborted", () => finish(new Error("API response aborted")));
       if (
@@ -491,9 +642,9 @@ function callLLM(
         res.statusCode < 200 ||
         res.statusCode > 299
       ) {
-        let errBody = "";
-        res.on("data", (chunk) => (errBody += chunk));
         res.on("end", () => {
+          if (settled) return;
+          const errBody = Buffer.concat(chunks).toString("utf8");
           const error = new Error(
             `API request failed (${res.statusCode}): ${redact(errBody).slice(0, 300)}`,
           ) as Error & { statusCode?: number };
@@ -503,10 +654,10 @@ function callLLM(
         return;
       }
 
-      let body = "";
-      res.on("data", (chunk) => (body += chunk));
       res.on("end", () => {
+        if (settled) return;
         try {
+          const body = Buffer.concat(chunks).toString("utf8");
           const json = JSON.parse(body);
           if (json.error) {
             finish(new Error(redact(String(json.error.message || JSON.stringify(json.error)))));
@@ -540,189 +691,173 @@ function callLLM(
 // ─── Main Command ───────────────────────────────────────────────────────────
 
 const generatingRepos = new Set<string>();
+const emptyHints = new Map<string, () => void>();
+
+function rootKey(rootPath: string): string {
+  return process.platform === "win32" ? rootPath.toLowerCase() : rootPath;
+}
+
+function showEmptyHint(repo: any, arg: any, hint: string) {
+  // Only the SCM command argument exposes a public SourceControlInputBox.
+  if (!arg?.rootUri || relative(repo.rootUri.fsPath, arg.rootUri.fsPath) !== "" ||
+      typeof arg.inputBox?.placeholder !== "string" || repo.inputBox.value.trim() || repo.state?.indexChanges.length) return;
+  const input = arg.inputBox as vscode.SourceControlInputBox;
+  const original = input.placeholder;
+  const key = rootKey(repo.rootUri.fsPath);
+  const restore = () => {
+    if (input.placeholder === hint) input.placeholder = original;
+    listener?.dispose();
+    emptyHints.delete(key);
+  };
+  const listener = repo.state?.onDidChange(() => {
+    if (repo.state.indexChanges.length) restore();
+  }) as vscode.Disposable | undefined;
+  emptyHints.set(key, restore);
+  input.placeholder = hint;
+}
+
+async function withGenerationProgress<T>(title: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  return vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    async (_progress, token) => {
+      const controller = new AbortController();
+      const cancellation = token.onCancellationRequested(() => controller.abort());
+      if (token.isCancellationRequested) controller.abort();
+      try {
+        if (controller.signal.aborted) throw abortError();
+        const result = await work(controller.signal);
+        if (controller.signal.aborted) throw abortError();
+        return result;
+      } catch (err) {
+        if (controller.signal.aborted) throw abortError();
+        if ((err as { plugin?: string })?.plugin === "timeout") {
+          throw new Error(t("Git 操作超过 30 秒时限，请检查 Git 配置后重试。", "Git exceeded its 30-second deadline. Check Git configuration and retry."));
+        }
+        throw err;
+      } finally {
+        cancellation.dispose();
+      }
+    },
+  );
+}
+
+function stagedChangesChanged() {
+  vscode.window.showInformationMessage(t("AI Commit：暂存内容已变更，旧生成结果已丢弃，请重新生成。", "AI Commit: Staged changes changed; the old result was discarded. Generate again."));
+}
 
 async function generateCommitMessage(arg?: any) {
-  const workspaceRoot =
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-
-  // Resolve the SCM repo up front — supports multi-repo workspaces when the
-  // command is invoked from a specific repo's SCM view.
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   const repo = await getRepo(arg);
-
   const rootPath = repo?.rootUri.fsPath ?? workspaceRoot;
   if (!rootPath) {
-    vscode.window.showErrorMessage(
-      t("AI Commit：未打开工作区文件夹。", "AI Commit: No workspace folder open."),
-    );
+    vscode.window.showErrorMessage(t("AI Commit：未打开工作区文件夹。", "AI Commit: No workspace folder open."));
     return;
   }
-
-  const repoKey = process.platform === "win32" ? rootPath.toLowerCase() : rootPath;
+  const repoKey = rootKey(rootPath);
   if (generatingRepos.has(repoKey)) {
     vscode.window.showInformationMessage(t("AI Commit：该仓库正在生成提交信息。", "AI Commit: Already generating a message for this repository."));
     return;
   }
   generatingRepos.add(repoKey);
+  emptyHints.get(repoKey)?.();
   const initialInput = repo?.inputBox.value;
+  let failure: unknown;
   try {
-    // Diff the staged changes before anything else, so the empty-diff path
-    // never touches config validation or the AI. Never stage anything
-    // ourselves — only what the user already staged is analyzed.
-    let rawDiff: string;
-    try {
-      rawDiff = await getDiffStaged(rootPath);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      Logger.error(`Git operation failed: ${msg}`, err);
-      vscode.window.showErrorMessage(
-        t(`AI Commit：Git 操作失败：${msg}`, `AI Commit: Git operation failed: ${msg}`),
-      );
-      return;
-    }
-
+    // Git preflight is cancellable; no credential dialog lives inside progress.
+    const { rawDiff, hasChanges } = await withGenerationProgress(
+      t("Simple AI Committer：正在读取暂存更改…", "Simple AI Committer: Reading staged changes…"),
+      async (signal) => {
+        const rawDiff = await getDiffStaged(rootPath, signal);
+        let hasChanges = false;
+        if (!rawDiff.trim()) {
+          try {
+            hasChanges = (await createGit(rootPath, signal).status()).files.length > 0;
+          } catch (err) {
+            if (signal.aborted || (err as { plugin?: string })?.plugin === "timeout") throw err;
+          }
+        }
+        return { rawDiff, hasChanges };
+      },
+    );
     if (!rawDiff.trim()) {
-      // Distinguish "nothing at all" from "changes exist but none are staged".
-      let hasChanges = false;
-      try {
-        const status = await simpleGit({
-          baseDir: rootPath,
-          binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
-        }).status();
-        hasChanges = status.files.length > 0;
-      } catch {
-        // ignore — fall back to the generic hint
-      }
       const hint = hasChanges
-        ? t(
-            "⚠ 没有已暂存的更改，请先暂存更改",
-            "⚠ No staged changes — stage your changes first",
-          )
-        : t("⚠ 没有可提交的更改", "⚠ No changes to commit");
-      const warning = hasChanges
-        ? t(
-            "AI Commit：未检测到已暂存的更改，已跳过 AI 生成。",
-            "AI Commit: No staged changes detected, AI call skipped.",
-          )
-        : t(
-            "AI Commit：未检测到任何更改，已跳过 AI 生成。",
-            "AI Commit: No changes detected, AI call skipped.",
-          );
+        ? t("请先暂存更改，再生成提交信息", "Stage your changes first, then generate a commit message")
+        : t("当前没有可提交的更改", "There are no changes to commit");
       if (repo) {
-        if (!repo.inputBox.value.trim()) repo.inputBox.value = hint;
+        showEmptyHint(repo, arg, hint);
         vscode.commands.executeCommand("workbench.view.scm");
       }
+      const warning = hasChanges
+        ? t("AI Commit：未检测到已暂存的更改，已跳过 AI 生成。", "AI Commit: No staged changes detected, AI call skipped.")
+        : t("AI Commit：未检测到任何更改，已跳过 AI 生成。", "AI Commit: No changes detected, AI call skipped.");
       Logger.warn(warning);
       vscode.window.showWarningMessage(warning);
       return;
     }
 
-    // Only read config once we have an actual diff to send.
-    let config: ReturnType<typeof getConfig>;
-    try {
-      config = getConfig();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(t(`AI Commit：${msg}`, `AI Commit: ${msg}`));
-      return;
-    }
-
-    // Resolve the key before showing progress: the migration/update
-    // confirmation must not wait invisibly behind the progress notification.
-    let apiKey: string;
-    try {
-      apiKey = await getApiKey();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(t(`AI Commit：${msg}`, `AI Commit: ${msg}`));
-      return;
-    }
-
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: t(
-          "Simple AI Committer：正在生成提交信息…",
-          "Simple AI Committer: Generating commit message…",
-        ),
-        cancellable: true,
-      },
-      async (_progress, token) => {
-        const abortCtrl = new AbortController();
-        const cancellation = token.onCancellationRequested(() => {
-          Logger.info("Generation cancelled by user");
-          abortCtrl.abort();
-        });
-        if (token.isCancellationRequested) abortCtrl.abort();
-        try {
-          if (abortCtrl.signal.aborted) return;
-          const summary = rawDiff.length > config.maxDiffChars
-            ? await simpleGit({
-                baseDir: rootPath,
-                binary: ConfigManager.getInstance().get<string>("gitPath", "git"),
-              }).diffSummary(["--staged"])
-            : undefined;
-          if (abortCtrl.signal.aborted) return;
-          const diff = truncateDiff(rawDiff, config.maxDiffChars, summary);
-
-          const message = await callLLM(
-            config.apiBaseUrl,
-            apiKey,
-            config.model,
-            config.systemPrompt,
-            config.temperature,
-            diff,
-            config.timeoutMs,
-            abortCtrl.signal,
-          );
-
-          if (abortCtrl.signal.aborted) return;
-          if (repo) {
-            if (repo.inputBox.value !== initialInput) {
-              vscode.window.showInformationMessage(t("AI Commit：提交草稿已变更，生成结果未写入。", "AI Commit: The draft has changed; the generated message was not inserted."));
-              return;
-            }
-            repo.inputBox.value = message;
-            // Focus the Source Control panel so the user sees it
-            vscode.commands.executeCommand("workbench.view.scm");
-          } else {
-            // Fallback: copy to clipboard
-            await vscode.env.clipboard.writeText(message);
-            vscode.window.showInformationMessage(
-              t(
-                "AI Commit：已复制到剪贴板（未找到 Git 仓库）。",
-                "AI Commit: Message copied to clipboard (SCM repo not found).",
-              ),
-            );
-          }
-        } catch (err: unknown) {
-          if (err instanceof Error && err.name === "AbortError") return;
-          const statusCode = (err as { statusCode?: number })?.statusCode;
-          if (statusCode === 401 || statusCode === 403) {
-            // Surface an actionable hint instead of the provider's raw error.
-            const setKey = t("设置 API Key", "Set API Key");
-            const choice = await vscode.window.showErrorMessage(
-              t(
-                `AI Commit：API 认证失败（${statusCode}），请检查 API Key 是否有效。`,
-                `AI Commit: API authentication failed (${statusCode}). Check that the API key is valid.`,
-              ),
-              setKey,
-            );
-            if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+    const config = getConfig();
+    const apiKey = await getApiKey(config.apiBaseUrl);
+    const revision = keyRevision;
+    await withGenerationProgress(
+      t("Simple AI Committer：正在生成提交信息…", "Simple AI Committer: Generating commit message…"),
+      async (signal) => {
+        const summary = rawDiff.length > config.maxDiffChars
+          ? await createGit(rootPath, signal).diffSummary(["--staged"])
+          : undefined;
+        if (signal.aborted) throw abortError();
+        if (await getDiffStaged(rootPath, signal) !== rawDiff) {
+          stagedChangesChanged();
+          return;
+        }
+        if (signal.aborted) throw abortError();
+        const stored = await readStoredKey();
+        const setting = vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "").trim();
+        const currentKey = (setting === MASKED_KEY ? "" : setting) || stored.key;
+        if (signal.aborted) throw abortError();
+        if (revision !== keyRevision || currentKey !== apiKey || currentEndpoint() !== apiEndpoint(config.apiBaseUrl)) throw credentialsChanged();
+        const message = await callLLM(
+          config.apiBaseUrl, apiKey, config.model, config.systemPrompt,
+          config.temperature, truncateDiff(rawDiff, config.maxDiffChars, summary), config.timeoutMs, signal,
+        );
+        if (signal.aborted) throw abortError();
+        if (await getDiffStaged(rootPath, signal) !== rawDiff) {
+          stagedChangesChanged();
+          return;
+        }
+        if (signal.aborted) throw abortError();
+        if (repo) {
+          if (repo.inputBox.value !== initialInput) {
+            vscode.window.showInformationMessage(t("AI Commit：提交草稿已变更，生成结果未写入。", "AI Commit: The draft has changed; the generated message was not inserted."));
             return;
           }
-          const msg = err instanceof Error ? err.message : String(err);
-          Logger.error(`Failed to generate commit message: ${msg}`, err);
-          vscode.window.showErrorMessage(
-            t(`AI Commit：${msg}`, `AI Commit: ${msg}`),
-          );
-        } finally {
-          cancellation.dispose();
+          repo.inputBox.value = message;
+          vscode.commands.executeCommand("workbench.view.scm");
+        } else {
+          await vscode.env.clipboard.writeText(message);
+          vscode.window.showInformationMessage(t("AI Commit：已复制到剪贴板（未找到 Git 仓库）。", "AI Commit: Message copied to clipboard (SCM repo not found)."));
         }
       },
     );
+  } catch (err) {
+    if (!(err instanceof Error && err.name === "AbortError")) failure = err;
   } finally {
     generatingRepos.delete(repoKey);
   }
+  // Interactive errors run only after progress and the repository lock are gone.
+  if (!failure) return;
+  const statusCode = (failure as { statusCode?: number })?.statusCode;
+  if (statusCode === 401 || statusCode === 403) {
+    const setKey = t("设置 API Key", "Set API Key");
+    const choice = await vscode.window.showErrorMessage(
+      t("AI Commit：API 认证失败（" + statusCode + "），请检查 API Key 是否有效。", "AI Commit: API authentication failed (" + statusCode + "). Check that the API key is valid."),
+      setKey,
+    );
+    if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
+    return;
+  }
+  const msg = failure instanceof Error ? failure.message : String(failure);
+  Logger.error("Failed to generate commit message: " + msg, failure);
+  vscode.window.showErrorMessage(t("AI Commit：" + msg, "AI Commit: " + msg));
 }
 
 // ─── Activation ──────────────────────────────────────────────────────────────
@@ -730,6 +865,8 @@ async function generateCommitMessage(arg?: any) {
 export function activate(context: vscode.ExtensionContext) {
   secrets = context.secrets;
   ConfigManager.getInstance(); // 初始化配置监听
+  const repositoryClosed = getGitApi()?.onDidCloseRepository((repo: any) => emptyHints.get(rootKey(repo.rootUri.fsPath))?.());
+  if (repositoryClosed) context.subscriptions.push(repositoryClosed);
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "ai-commit.generateCommitMessage",
@@ -743,5 +880,6 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  for (const restore of emptyHints.values()) restore();
   ConfigManager.getInstance().dispose();
 }
