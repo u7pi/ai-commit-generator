@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore the settings mask on startup for retained secure keys after update/reinstall without probing the API. HTTP 401 clears the rejected credential and matching settings only while they still match the request; 403, network errors, and timeouts retain it, and newer keys/settings are preserved.
 - Bind the single stored API key atomically to a normalized request endpoint. Confirm legacy upgrades and destination changes, hide sensitive query values, and make dismissed dialogs cancel generation.
 - Serialize key writes/clears, invalidate stale dialogs, remove matching plaintext copies across accessible scopes, and report preserved differing values or cleanup failures. Explicit plaintext authorization applies only to the same key/endpoint in the current window. Downgrading requires setting the key again.
 - Support absolute Git paths containing spaces, cancel all Git reads, and enforce a fixed 30-second deadline. Recheck the full staged diff before requests and output; discard stale results and preserve edited drafts.

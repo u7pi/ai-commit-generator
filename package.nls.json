@@ -5,7 +5,7 @@
   "command.clearApiKey.title": "Simple AI Committer: Clear Stored API Key",
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "OpenAI-compatible API base URL (default: DeepSeek). Enter it directly or run 'Simple AI Committer: Select API Base URL'. Changing the request destination, including path or query, requires approval before sending a stored key.",
-  "config.apiKey.description": "API key bound to the endpoint. Prefer 'Simple AI Committer: Set API Key' for password input. Plaintext entered here requires migration or explicit window authorization; migration saves a versioned SecretStorage record, shows *****, and removes identical copies in accessible settings scopes.",
+  "config.apiKey.description": "API key bound to the endpoint. Prefer 'Simple AI Committer: Set API Key' for password input. ***** indicates a stored key and is restored in an empty field on startup without a network check. HTTP 401 clears the rejected key and mask; 403/network errors retain them. Plaintext requires migration or explicit window authorization; migration masks settings and removes identical accessible copies.",
   "config.model.description": "Model name to use (e.g. deepseek-flash, kimi-for-coding, gpt-6-luna)",
   "config.systemPrompt.description": "Custom system prompt sent to the LLM. The value shown above is the built-in English default; for the zh-cn display language a Chinese prompt is used until you change it.",
   "config.maxDiffChars.description": "Maximum diff characters, including file summaries and truncation notices. Must be a positive integer.",

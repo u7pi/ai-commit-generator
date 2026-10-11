@@ -16,7 +16,7 @@ npm run compile
 
 The committed lockfile fixes dependency versions. GitHub Actions runs installation, tests, compilation, and diff checks on Windows and Ubuntu with Node.js 22.
 
-Tests use a local HTTP server and simulated VS Code, Git, and SecretStorage APIs. They cover endpoint binding, legacy upgrades, configuration snapshots/scopes, delayed writes and clearing, closed progress during dialogs, staged-content changes, draft preservation, Git/API cancellation, byte limits and UTF-8 boundaries, placeholder cleanup, fallback paths, and bounded summaries. Additional tests load the installed simple-git library and redirect only its spawn boundary to real Node child processes to verify literal paths containing spaces, cancellation, and deadlines despite continuous output. The 30-second plugin timer is shortened only inside these tests.
+Tests use a local HTTP server and simulated VS Code, Git, and SecretStorage APIs. They cover startup mask restoration without a network probe, HTTP 401 cleanup and preservation of newer credentials, retention on 403/network errors, endpoint binding, legacy upgrades, configuration snapshots/scopes, delayed writes and clearing, closed progress during dialogs, staged-content changes, draft preservation, Git/API cancellation, byte limits and UTF-8 boundaries, placeholder cleanup, fallback paths, and bounded summaries. Additional tests load the installed simple-git library and redirect only its spawn boundary to real Node child processes to verify literal paths containing spaces, cancellation, and deadlines despite continuous output. The 30-second plugin timer is shortened only inside these tests.
 
 ## Debugging and locale checks
 

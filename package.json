@@ -28,7 +28,7 @@
     "type": "git",
     "url": "https://github.com/u7pi/ai-commit-generator"
   },
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [

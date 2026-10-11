@@ -34,19 +34,20 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
       getConfiguration: () => {
         const snapshot = options.snapshotConfig ? { ...config } : config;
         return {
-        get: (key, fallback) => (key === "apiKey" ? snapshot.keyWorkspaceValue ?? snapshot[key] : snapshot[key]) ?? fallback,
-        inspect: (key) => key === "apiKey"
-          ? { workspaceValue: config.keyWorkspaceValue, globalValue: config.apiKey }
-          : { workspaceValue: config.workspaceValue },
-        update: async (key, value, target) => {
-          observed.updates.push({ key, value, target });
-          if (typeof options.updateError === "function") await options.updateError(key, value, target);
-          else if (options.updateError) throw new Error(options.updateError);
-          if (key === "apiKey" && target === 2) config.keyWorkspaceValue = value;
-          else config[key] = value;
-          configurationEvents.emit("change", { affectsConfiguration: () => true });
-        },
-      }; },
+          get: (key, fallback) => (key === "apiKey" ? snapshot.keyWorkspaceValue ?? snapshot[key] : snapshot[key]) ?? fallback,
+          inspect: (key) => key === "apiKey"
+            ? { workspaceValue: snapshot.keyWorkspaceValue, globalValue: snapshot.apiKey }
+            : { workspaceValue: snapshot.workspaceValue },
+          update: async (key, value, target) => {
+            observed.updates.push({ key, value, target });
+            if (typeof options.updateError === "function") await options.updateError(key, value, target);
+            else if (options.updateError) throw new Error(options.updateError);
+            if (key === "apiKey" && target === 2) config.keyWorkspaceValue = value;
+            else config[key] = value;
+            configurationEvents.emit("change", { affectsConfiguration: () => true });
+          },
+        };
+      },
     },
     extensions: { getExtension: () => options.gitUnavailable ? undefined : ({ exports: { enabled: !options.gitDisabled, getAPI: () => {
       if (options.gitApiError) throw new Error("Git model not found");
@@ -119,13 +120,14 @@ function load(config = {}, repositories = [], diff = "+ staged change", language
     },
     delete: async (key) => {
       observed.secretOps.push("delete");
-      if (options.deleteError) throw new Error(options.deleteError);
+      if (typeof options.deleteError === "function") await options.deleteError(key);
+      else if (options.deleteError) throw new Error(options.deleteError);
       observed.secretValues.delete(key);
     },
   };
   const subscriptions = [];
-  context.exports.activate({ subscriptions, secrets });
-  return { ...context.exports.test, observed, vscode, subscriptions, deactivate: context.exports.deactivate,
+  const ready = Promise.resolve(context.exports.activate({ subscriptions, secrets }));
+  return { ...context.exports.test, observed, vscode, subscriptions, ready, deactivate: context.exports.deactivate,
     changeConfiguration() { configurationEvents.emit("change", { affectsConfiguration: () => true }); },
     closeRepo(target) { closeEvents.emit("close", target); },
   };
@@ -189,6 +191,7 @@ test("manifest translations cover every referenced key and use matching key sets
   const { DEFAULT_SYSTEM_PROMPT_EN } = load();
   assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiBaseUrl"].default, "https://api.deepseek.com/v1");
+  assert.ok(manifest.activationEvents.includes("onStartupFinished"));
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiKey"].markdownDeprecationMessage, undefined);
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   for (const key of keys) {
@@ -746,11 +749,13 @@ test("overwriting the mask with a new key replaces the stored key without prompt
   });
 });
 
-test("empty staged changes never read secrets or offer migration", async () => {
+test("empty staged changes never read secrets or offer migration after activation", async () => {
   const target = repo("app");
   const extension = load({ apiKey: "legacy-secret" }, [target], "", "en", { migrate: true });
+  await extension.ready;
+  const reads = extension.observed.secretOps.length;
   await extension.generateCommitMessage(target);
-  assert.equal(extension.observed.secretOps.length, 0);
+  assert.equal(extension.observed.secretOps.length, reads);
   assert.equal(extension.observed.updates.length, 0);
   assert.equal(extension.observed.warnings.length, 1);
   assert.ok(!extension.observed.warnings[0].includes("migrate"));
@@ -1213,7 +1218,7 @@ function realGitFixture(script) {
   const ready = deferred();
   const context = {
     exports: {}, Buffer, process, console, clearTimeout,
-    setTimeout: (callback, delay, ...args) => setTimeout(callback, delay === 30000 ? 600 : delay, ...args),
+    setTimeout: (callback, delay, ...args) => setTimeout(callback, delay === 30000 ? 1500 : delay, ...args),
     require: name => name === "node:child_process" ? { spawn: (binary, args, options) => {
       calls.push({ binary, args, options });
       const child = spawn(process.execPath, ["-e", script], options);
@@ -1244,7 +1249,7 @@ test("real simple-git deadlines ignore continuous output and cancellation kills 
     const controller = new AbortController();
     const work = extension.getDiffStaged(process.cwd(), controller.signal);
     const rejected = assert.rejects(work, error => cancel ? /abort/i.test(error.message) : error.plugin === "timeout");
-    await fixture.ready.promise;
+    await Promise.race([fixture.ready.promise, rejected.then(() => { throw new Error("Child exited before producing continuous output"); })]);
     if (cancel) controller.abort();
     await rejected;
     assert.equal(fixture.calls.length, 1);
@@ -1318,6 +1323,173 @@ test("Git summary cancellation skips the request and releases progress and lock"
     await pending;
     assert.equal(requests, 0);
     assert.ok(extension.observed.progress.every(progress => progress.closed && progress.disposed));
+    assert.equal(extension.observed.errors.length, 0);
+  });
+});
+
+test("query secrets echoed by an API never reach notifications or logs", async () => {
+  for (const status of [200, 500]) {
+    await withServer((_req, res) => {
+      res.writeHead(status);
+      res.end(status === 200 ? JSON.stringify({ error: { message: "private query / token=private%20query / token=private+query" } }) : "private query / token=private%20query / token=private+query");
+    }, async baseUrl => {
+      const extension = load({ apiBaseUrl: baseUrl + "?token=private%20query" }, [repo("redaction")], "diff", "en");
+      await extension.generateCommitMessage();
+      assert.equal(extension.observed.errors.length, 1);
+      assert.doesNotMatch(extension.observed.errors.join("\n") + extension.observed.logs.join("\n"), /private(?: query|%20query|\+query)/);
+    });
+  }
+});
+
+test("password command can replace an invalid versioned record", async () => {
+  const extension = load({}, [], "diff", "en", { input: "replacement-key" });
+  await extension.ready;
+  extension.observed.secretValues.set("aiCommit.apiKey", '{"version":1,"key":null}');
+  await extension.observed.commands.get("ai-commit.setApiKey")();
+  assert.equal(storedKey(extension), "replacement-key");
+  assert.equal(extension.observed.errors.length, 0);
+});
+
+test("repository-close cleanup also works when Git initializes after extension activation", async () => {
+  const target = repo("late-git");
+  const options = { gitUnavailable: true };
+  const extension = load({}, [target], "", "en", options);
+  options.gitUnavailable = false;
+  await extension.generateCommitMessage(target);
+  assert.notEqual(target.inputBox.placeholder, "Original placeholder");
+  extension.closeRepo(target);
+  assert.equal(target.inputBox.placeholder, "Original placeholder");
+  assert.equal(target.listenerCount(), 0);
+});
+
+test("activation restores the settings mask for retained secure keys without making a request", async () => {
+  for (const legacyStored of [false, true]) {
+    for (const apiKey of [undefined, "", "   "]) {
+      const config = { apiKey };
+      const extension = load(config, [], "diff", "en", { secureKey: "retained-key", legacyStored });
+      await extension.ready;
+      assert.equal(config.apiKey, "*****");
+      assert.equal(storedKey(extension), "retained-key");
+      assert.equal(extension.observed.gitOptions.length, 0);
+      assert.equal(extension.observed.warnings.length, 0);
+      assert.equal(extension.observed.secretOps.filter(op => op === "store").length, 0);
+    }
+  }
+  for (const apiKey of [undefined, "new-plaintext", "*****"]) {
+    const config = { apiKey };
+    const extension = load(config, [], "diff", "en", { secureKey: apiKey === undefined ? undefined : "retained-key" });
+    await extension.ready;
+    assert.equal(config.apiKey, apiKey);
+  }
+});
+
+test("401 clears the rejected key and all masks before showing the authentication prompt", async () => {
+  for (const language of ["en", "zh-cn"]) {
+    await withServer((_req, res) => { res.writeHead(401); res.end("invalid key"); }, async baseUrl => {
+      const config = { apiBaseUrl: baseUrl, apiKey: "*****", keyWorkspaceValue: "*****" };
+      const target = repo("rejected"); target.inputBox.value = "user draft";
+      let extension;
+      extension = load(config, [target], "diff", language, { secureKey: "old-key", errorAction: () => {
+        assert.equal(storedKey(extension), undefined);
+        assert.equal(config.apiKey, undefined); assert.equal(config.keyWorkspaceValue, undefined);
+        assert.ok(extension.observed.progress.every(p => p.closed && p.disposed));
+      } });
+      await extension.generateCommitMessage(target);
+      assert.equal(storedKey(extension), undefined);
+      assert.equal(target.inputBox.value, "user draft");
+      assert.equal(extension.observed.errors.length, 1);
+      assert.match(extension.observed.errors[0], language === "zh-cn" ? /已清除/ : /cleared/i);
+    });
+  }
+});
+
+test("403, server errors, network errors and timeouts retain the stored key and its restored mask", async () => {
+  for (const status of [403, 500, "network", "timeout"]) {
+    await withServer((req, res) => { if (status === "network") req.socket.destroy(); else if (status !== "timeout") { res.writeHead(status); res.end("failed"); } }, async baseUrl => {
+      const config = { apiBaseUrl: baseUrl, timeoutMs: 50 };
+      const extension = load(config, [repo("retained")], "diff", "en", { secureKey: "valid-key" });
+      await extension.generateCommitMessage();
+      assert.equal(config.apiKey, "*****"); assert.equal(storedKey(extension), "valid-key");
+      assert.ok(!extension.observed.secretOps.includes("delete"));
+    });
+  }
+});
+
+test("a late 401 never clears a replacement key, changed settings, or a changed endpoint", async () => {
+  for (const change of ["key", "setting", "endpoint"]) {
+    const arrived = deferred(), replyReady = deferred();
+    await withServer((_req, res) => { arrived.resolve(); replyReady.promise.then(() => { res.writeHead(401); res.end("denied"); }); }, async baseUrl => {
+      const config = { apiBaseUrl: baseUrl, apiKey: "*****" };
+      const extension = load(config, [repo("late-401")], "diff", "en", { secureKey: "old-key", input: "new-key" });
+      const work = extension.generateCommitMessage(); await arrived.promise;
+      if (change === "key") await extension.observed.commands.get("ai-commit.setApiKey")();
+      if (change === "setting") { config.apiKey = "new-plaintext"; extension.changeConfiguration(); }
+      if (change === "endpoint") { config.apiBaseUrl = baseUrl + "?changed=1"; extension.changeConfiguration(); }
+      replyReady.resolve(); await work;
+      assert.equal(storedKey(extension), change === "key" ? "new-key" : "old-key");
+      assert.equal(config.apiKey, change === "setting" ? "new-plaintext" : "*****");
+      assert.ok(!extension.observed.secretOps.includes("delete"));
+    });
+  }
+});
+
+test("401 revokes explicit plaintext authorization and removes matching invalid copies only", async () => {
+  await withServer((_req, res) => { res.writeHead(401); res.end("denied"); }, async baseUrl => {
+    const config = { apiBaseUrl: baseUrl, apiKey: "different-key", keyWorkspaceValue: "invalid-key" };
+    const extension = load(config, [repo("plaintext-401")], "diff", "en", { migrate: choices => choices[1] });
+    await extension.generateCommitMessage();
+    assert.equal(config.keyWorkspaceValue, "");
+    assert.equal(config.apiKey, "different-key");
+    assert.equal(storedKey(extension), undefined);
+    const requests = extension.observed.warnings.length;
+    config.keyWorkspaceValue = "invalid-key";
+    extension.changeConfiguration();
+    await extension.generateCommitMessage();
+    assert.equal(extension.observed.warnings.length, requests + 1);
+  });
+});
+
+test("automatic 401 cleanup failures report residue without exposing the key", async () => {
+  for (const failure of ["delete", "mask"]) {
+    await withServer((_req, res) => { res.writeHead(401); res.end("denied"); }, async baseUrl => {
+      const config = { apiBaseUrl: baseUrl, apiKey: "*****" };
+      const extension = load(config, [repo("cleanup-failure")], "diff", "en", {
+        secureKey: "private-key", deleteError: failure === "delete" ? "private-key" : undefined,
+        updateError: failure === "mask" ? "private-key" : undefined,
+      });
+      await extension.generateCommitMessage();
+      assert.equal(storedKey(extension), failure === "delete" ? "private-key" : undefined);
+      assert.equal(config.apiKey, "*****");
+      assert.match(extension.observed.errors[0], /could not|failed/i);
+      assert.doesNotMatch(extension.observed.errors.join("\n") + extension.observed.logs.join("\n"), /private-key/);
+    });
+  }
+});
+
+test("a key typed while rejected-key deletion is pending is preserved", async () => {
+  const deleting = deferred(), release = deferred();
+  await withServer((_req, res) => { res.writeHead(401); res.end("denied"); }, async baseUrl => {
+    const config = { apiBaseUrl: baseUrl, apiKey: "*****" };
+    const extension = load(config, [repo("deleting")], "diff", "en", { secureKey: "old-key",
+      deleteError: async () => { deleting.resolve(); await release.promise; },
+    });
+    const work = extension.generateCommitMessage(); await deleting.promise;
+    config.apiKey = "new-plaintext"; extension.changeConfiguration();
+    release.resolve(); await work;
+    assert.equal(storedKey(extension), undefined);
+    assert.equal(config.apiKey, "new-plaintext");
+    assert.doesNotMatch(extension.observed.errors.at(-1), /masks were cleared/);
+  });
+});
+
+test("successful reuse restores an emptied field and retains the key", async () => {
+  await withServer((_req, res) => reply(res), async baseUrl => {
+    const config = { apiBaseUrl: baseUrl, apiKey: "*****" };
+    const extension = load(config, [repo("successful")], "diff", "en", { secureKey: "valid-key" });
+    await extension.ready;
+    config.apiKey = ""; extension.changeConfiguration();
+    await extension.generateCommitMessage();
+    assert.equal(config.apiKey, "*****"); assert.equal(storedKey(extension), "valid-key");
     assert.equal(extension.observed.errors.length, 0);
   });
 });

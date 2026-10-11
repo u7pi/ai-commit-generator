@@ -45,6 +45,8 @@ No staged changes means no AI request. If a Source Control repository is unavail
 
 The defaults are `https://api.deepseek.com/v1` and `deepseek-flash`; explicit URL/model settings are retained. The stored key is bound to the actual request destination, including path and query parameters. Changing it or upgrading an old string-only key requires approval; dismissing the dialog sends nothing. Key prompts hide query values. Plaintext settings can be migrated and masked, or explicitly authorized for that key and endpoint in this window. Migration removes identical plaintext copies in accessible scopes and warns about differing copies or cleanup failures. After downgrading, set the key again. See [key storage](./docs/configuration.md#api-key-storage-and-migration).
 
+After updating or reinstalling the same extension ID, a retained secure key restores `*****` in an empty settings field on startup, without a network check. The mask means a key is stored. A generation request returning HTTP 401 clears the rejected key and its masks; 403, network errors, and timeouts retain them. A late response cannot clear a replacement key or newer settings.
+
 Cancel from the Git-reading or generation notification. Git commands have a fixed 30-second deadline; API requests use `timeoutMs` and reject response bodies over 1 MiB. Repeated clicks for the same repository are skipped while generation is running. Edited drafts are preserved; changed staged content discards the result. Empty-stage warnings never alter commit text: the SCM button uses a temporary placeholder, while the Command Palette uses notification-only hints when no public placeholder is available.
 
 ## Documentation
@@ -76,6 +78,8 @@ Licensed under [MIT](./LICENSE).
 运行“Simple AI Committer：选择 API 地址（支持自定义输入）”可选择常用接口，也可输入完整的 `http(s)` URL。已有工作区地址时更新工作区，否则更新用户设置；模型与 API Key 需单独配置。
 
 默认地址为 `https://api.deepseek.com/v1`，默认模型为 `deepseek-flash`；已有显式地址和模型配置保留。单个密钥与实际请求地址一起保存到 VS Code SecretStorage，且不跨机器同步。协议、主机、端口、路径或查询参数变化后，必须确认才能发送已有密钥；旧格式密钥首次使用也需确认绑定，无需重新输入。确认界面隐藏查询值，取消或关闭即终止生成。“设置 API Key”的密码输入框会显示当前目标地址。
+
+更新或重新安装相同扩展 ID 后，启动时若检测到保留的安全密钥且设置栏为空，会恢复 *****，表示已有密钥，不会自动联网验证。实际生成请求返回 HTTP 401 时，清除本次被拒绝的密钥及掩码，让有效设置栏保持空；403、网络错误及超时保留密钥。迟到的 401 不会删除新密钥或覆盖新设置。其他配置层中的不同明文保留；必要时在当前有效层保留空值，避免旧的不同明文自动成为有效密钥。
 
 无安全密钥时，设置中的明文 Key 可选择“迁移并掩码”或明确授权“本窗口使用明文，不迁移”；授权只对同一密钥和地址有效，取消不发送请求。迁移成功后有效设置层显示 *****，其他可访问用户／当前工作区层中相同的明文副本删除，不同值保留并提示检查。设置更新失败会保留安全记录并明确报告残留。同一已绑定地址下，新输入的明文 Key 可自动更新存储；地址变化仍需确认。等待输入期间不阻塞设置或清除命令，状态变化会使旧操作失效。“清除已存储的 API Key”同时移除安全记录和可访问设置层中的掩码；遗留明文需重新授权。降级到旧版本时需要重新设置密钥。
 

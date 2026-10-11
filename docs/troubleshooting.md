@@ -30,7 +30,9 @@ Cancel through the generation notification. Cancellation preserves the draft and
 
 ## Key storage or authentication errors
 
-For 401/403, use **Set API Key** in the error notification. Progress and the repository lock have already been released, so you can retry even while that notification is open.
+For 401/403, use **Set API Key** in the error notification. Progress and the repository lock have already been released, so you can retry even while that notification is open. HTTP 401 automatically clears the rejected credential and settings masks if they still match that request; enter a new key. HTTP 403, network errors, and timeouts retain the key because they do not establish that it is invalid. A late 401 preserves any newer key or changed settings. If cleanup fails, follow the notification to inspect secure storage and user/workspace settings.
+
+An empty settings field after update/reinstall is restored to `*****` on startup when the same extension ID still has a secure key. The mask indicates stored credentials; validity is checked by your next generation request. There is no automatic network probe. Blank settings alone do not delete secure storage.
 
 If secure storage cannot save or bind a key, no request is sent. If masking or plaintext-copy cleanup fails after secure storage succeeds, the secure record is retained: inspect user and workspace settings for residue. Different keys in other scopes are deliberately preserved and reported. Clearing a key removes stored credentials and accessible masks, but leftover plaintext requires new authorization. See [API key storage and migration](./configuration.md#api-key-storage-and-migration).
 

@@ -246,6 +246,65 @@ async function writeMaskedKey(config: vscode.WorkspaceConfiguration, key: string
   }
 }
 
+async function restoreStoredKeyMask(): Promise<void> {
+  try {
+    await serializeKeyWrite(async () => {
+      const revision = keyRevision;
+      if (vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "").trim()) return;
+      const stored = await readStoredKey();
+      const config = vscode.workspace.getConfiguration("aiCommit");
+      if (stored.key && revision === keyRevision && !config.get<string>("apiKey", "").trim()) {
+        await writeMaskedKey(config, stored.key);
+      }
+    });
+  } catch {
+    vscode.window.showErrorMessage(t("AI Commit：无法恢复已存储密钥的掩码，请检查安全存储和设置。", "AI Commit: Could not restore the stored-key mask. Check secure storage and settings."));
+  }
+}
+
+interface RequestCredentials { key: string; endpoint: string; raw: string | undefined; setting: string; revision: number; }
+
+async function clearRejectedKey(used: RequestCredentials): Promise<boolean> {
+  return serializeKeyWrite(async () => {
+    const stored = await readStoredKey();
+    const config = vscode.workspace.getConfiguration("aiCommit");
+    if (!used.key || keyRevision !== used.revision || stored.raw !== used.raw ||
+        currentEndpoint() !== used.endpoint || config.get<string>("apiKey", "").trim() !== used.setting) return false;
+    const cleanupRevision = ++keyRevision;
+    plaintextAuthorization = undefined;
+    if (stored.key) {
+      try {
+        await secrets.delete(API_KEY);
+      } catch {
+        throw new Error(t("无法清除被拒绝的安全密钥，原密钥和掩码已保留，请手动清除。", "Could not clear the rejected stored key; the key and mask were retained. Clear it manually."));
+      }
+    }
+    if (keyRevision !== cleanupRevision || currentEndpoint() !== used.endpoint ||
+        vscode.workspace.getConfiguration("aiCommit").get<string>("apiKey", "").trim() !== used.setting) return false;
+    const inspected = config.inspect<string>("apiKey");
+    const target = keySettingTarget(config);
+    const scopes = [
+      [vscode.ConfigurationTarget.Global, inspected?.globalValue],
+      [vscode.ConfigurationTarget.Workspace, inspected?.workspaceValue],
+    ] as const;
+    // Keep unrelated plaintext, but do not let removing a workspace mask expose it.
+    const otherKey = scopes.some(([, value]) => value?.trim() && value.trim() !== MASKED_KEY && value.trim() !== used.key);
+    let failed = false;
+    for (const [scope] of scopes) {
+      const fresh = vscode.workspace.getConfiguration("aiCommit").inspect<string>("apiKey");
+      const value = (scope === vscode.ConfigurationTarget.Global ? fresh?.globalValue : fresh?.workspaceValue)?.trim();
+      if (value !== MASKED_KEY && value !== used.key) continue;
+      try {
+        await config.update("apiKey", otherKey && scope === target ? "" : undefined, scope);
+      } catch {
+        failed = true;
+      }
+    }
+    if (failed) throw new Error(t("被拒绝的安全密钥已清除，但设置中仍可能有掩码或同值明文残留，请检查用户和工作区设置。", "The rejected stored key was cleared, but settings cleanup failed. Check user and workspace settings for masks or matching plaintext."));
+    return true;
+  });
+}
+
 async function setApiKey() {
   let endpoint: string;
   let label: string;
@@ -399,9 +458,7 @@ async function getApiKey(baseUrl: string): Promise<string> {
           vscode.window.showInformationMessage(t("AI Commit：设置中的新 API Key 已更新安全存储。", "AI Commit: The new settings API key updated secure storage."));
         }
       }
-      if (plaintext || key !== stored.key || endpoint !== stored.endpoint || setting.trim() === MASKED_KEY) {
-        await writeMaskedKey(config, key);
-      }
+      await writeMaskedKey(config, key);
       if (operationRevision !== keyRevision || currentEndpoint() !== endpoint) throw credentialsChanged();
       return key;
     });
@@ -599,7 +656,16 @@ function callLLM(
 
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const redact = (text: string) => (apiKey ? text.split(apiKey).join("[redacted]") : text);
+    const sensitiveValues = [apiKey, ...parsedUrl.searchParams.values()].filter(Boolean);
+    const redact = (text: string) => {
+      for (const value of sensitiveValues) {
+        const encoded = encodeURIComponent(value);
+        for (const candidate of new Set([value, encoded, encoded.replace(/%20/g, "+")])) {
+          text = text.split(candidate).join("[redacted]");
+        }
+      }
+      return text;
+    };
     const finish = (error?: Error, message?: string) => {
       if (settled) return;
       settled = true;
@@ -608,8 +674,9 @@ function callLLM(
       if (error) {
         req.destroy();
         const statusCode = (error as Error & { statusCode?: number }).statusCode;
-        if (apiKey && error.message.includes(apiKey)) {
-          const redacted = new Error(redact(error.message)) as Error & { statusCode?: number };
+        const safeMessage = redact(error.message);
+        if (safeMessage !== error.message) {
+          const redacted = new Error(safeMessage) as Error & { statusCode?: number };
           redacted.name = error.name;
           redacted.statusCode = statusCode;
           reject(redacted);
@@ -707,10 +774,14 @@ function showEmptyHint(repo: any, arg: any, hint: string) {
   const restore = () => {
     if (input.placeholder === hint) input.placeholder = original;
     listener?.dispose();
+    repositoryClosed?.dispose();
     emptyHints.delete(key);
   };
   const listener = repo.state?.onDidChange(() => {
     if (repo.state.indexChanges.length) restore();
+  }) as vscode.Disposable | undefined;
+  const repositoryClosed = getGitApi()?.onDidCloseRepository((closed: any) => {
+    if (rootKey(closed.rootUri.fsPath) === key) restore();
   }) as vscode.Disposable | undefined;
   emptyHints.set(key, restore);
   input.placeholder = hint;
@@ -762,6 +833,7 @@ async function generateCommitMessage(arg?: any) {
   emptyHints.get(repoKey)?.();
   const initialInput = repo?.inputBox.value;
   let failure: unknown;
+  let requestCredentials: RequestCredentials | undefined;
   try {
     // Git preflight is cancellable; no credential dialog lives inside progress.
     const { rawDiff, hasChanges } = await withGenerationProgress(
@@ -815,6 +887,7 @@ async function generateCommitMessage(arg?: any) {
         const currentKey = (setting === MASKED_KEY ? "" : setting) || stored.key;
         if (signal.aborted) throw abortError();
         if (revision !== keyRevision || currentKey !== apiKey || currentEndpoint() !== apiEndpoint(config.apiBaseUrl)) throw credentialsChanged();
+        requestCredentials = { key: apiKey, endpoint: apiEndpoint(config.apiBaseUrl), raw: stored.raw, setting, revision };
         const message = await callLLM(
           config.apiBaseUrl, apiKey, config.model, config.systemPrompt,
           config.temperature, truncateDiff(rawDiff, config.maxDiffChars, summary), config.timeoutMs, signal,
@@ -847,9 +920,17 @@ async function generateCommitMessage(arg?: any) {
   if (!failure) return;
   const statusCode = (failure as { statusCode?: number })?.statusCode;
   if (statusCode === 401 || statusCode === 403) {
+    let cleanup = "";
+    if (statusCode === 401 && requestCredentials?.key) {
+      try {
+        if (await clearRejectedKey(requestCredentials)) cleanup = t(" 被拒绝的密钥及设置掩码已清除，请输入新密钥。", " The rejected key and settings masks were cleared. Enter a new key.");
+      } catch (err) {
+        cleanup = " " + (err instanceof Error ? err.message : t("密钥清理失败，请检查设置。", "Key cleanup failed. Check settings."));
+      }
+    }
     const setKey = t("设置 API Key", "Set API Key");
     const choice = await vscode.window.showErrorMessage(
-      t("AI Commit：API 认证失败（" + statusCode + "），请检查 API Key 是否有效。", "AI Commit: API authentication failed (" + statusCode + "). Check that the API key is valid."),
+      t("AI Commit：API 认证失败（" + statusCode + "），请检查 API Key 是否有效。", "AI Commit: API authentication failed (" + statusCode + "). Check that the API key is valid.") + cleanup,
       setKey,
     );
     if (choice === setKey) await vscode.commands.executeCommand("ai-commit.setApiKey");
@@ -865,8 +946,6 @@ async function generateCommitMessage(arg?: any) {
 export function activate(context: vscode.ExtensionContext) {
   secrets = context.secrets;
   ConfigManager.getInstance(); // 初始化配置监听
-  const repositoryClosed = getGitApi()?.onDidCloseRepository((repo: any) => emptyHints.get(rootKey(repo.rootUri.fsPath))?.());
-  if (repositoryClosed) context.subscriptions.push(repositoryClosed);
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "ai-commit.generateCommitMessage",
@@ -877,6 +956,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("ai-commit.clearApiKey", clearApiKey),
   );
   Logger.info("Extension activated");
+  return restoreStoredKeyMask();
 }
 
 export function deactivate() {

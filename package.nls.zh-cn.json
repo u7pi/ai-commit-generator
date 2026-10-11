@@ -5,7 +5,7 @@
   "command.clearApiKey.title": "Simple AI Committer：清除已存储的 API Key",
   "config.title": "Simple AI Committer",
   "config.apiBaseUrl.description": "兼容 OpenAI 的 API 地址，默认 DeepSeek。可直接输入或运行“Simple AI Committer：选择 API 地址”。实际请求地址（含路径或查询参数）变化后，发送已有密钥前需要确认。",
-  "config.apiKey.description": "绑定接口的 API Key。建议运行“Simple AI Committer：设置 API Key”使用密码输入框。在此输入的明文需迁移或明确授权本窗口使用；迁移会保存带版本的安全记录、显示 *****，并删除可访问设置层中的同值副本。",
+  "config.apiKey.description": "绑定接口的 API Key，建议运行“Simple AI Committer：设置 API Key”使用密码输入框。***** 表示已有安全密钥，启动时会在空设置栏恢复，无需联网验证。HTTP 401 清除被拒绝的密钥及掩码；403／网络错误保留。在此输入明文需迁移或明确授权本窗口使用；迁移会掩码并删除可访问设置层的同值副本。",
   "config.model.description": "使用的模型名称（如 deepseek-flash、kimi-for-coding、gpt-6-luna）",
   "config.systemPrompt.description": "发送给大模型的自定义系统提示词。上方显示的是内置英文默认提示词；VS Code 显示语言为简体中文（zh-cn）时，在你修改前实际使用中文提示词。",
   "config.maxDiffChars.description": "diff 的最大字符数，包含文件摘要和截断提示，必须为正整数",
