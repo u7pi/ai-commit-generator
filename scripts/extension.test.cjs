@@ -211,7 +211,7 @@ test("manifest translations cover every referenced key and use matching key sets
   const zh = require("../package.nls.zh-cn.json");
   const keys = [...JSON.stringify(manifest).matchAll(/"%([^%]+)%"/g)].map((match) => match[1]);
   const { DEFAULT_SYSTEM_PROMPT_EN, CLEARABLE_SETTINGS } = load();
-  assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(manifest.contributes.configuration.properties).map((key) => key.slice("aiCommit.".length)).sort());
+  assert.deepEqual([...CLEARABLE_SETTINGS].sort(), Object.keys(manifest.contributes.configuration.properties).map((key) => key.slice(key.indexOf(".") + 1)).sort());
   assert.equal(manifest.contributes.configuration.properties["aiCommit.systemPrompt"].default, DEFAULT_SYSTEM_PROMPT_EN);
   assert.equal(manifest.contributes.configuration.properties["aiCommit.apiBaseUrl"].default, "https://api.deepseek.com/v1");
   assert.ok(manifest.activationEvents.includes("onStartupFinished"));
@@ -1593,7 +1593,7 @@ test("clearing all data restores manifest defaults", async () => {
   await extension.observed.commands.get("ai-commit.clearAllData")();
   const view = extension.vscode.workspace.getConfiguration("aiCommit");
   for (const [fullKey, prop] of Object.entries(manifest.contributes.configuration.properties)) {
-    assert.deepEqual(view.get(fullKey.slice("aiCommit.".length), prop.default), prop.default, fullKey);
+    assert.deepEqual(view.get(fullKey.slice(fullKey.indexOf(".") + 1), prop.default), prop.default, fullKey);
   }
 });
 
