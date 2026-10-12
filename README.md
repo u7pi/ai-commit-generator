@@ -26,6 +26,14 @@ A simple, practical way to generate Git commit messages from **staged changes** 
 2. Search for **Simple AI Committer** by **u7pi**.
 3. Click **Install**.
 
+Or install from the command line:
+
+```bash
+code ext install u7pi.simple-ai-committer
+```
+
+Run **Developer: Reload Window** afterwards so already-open windows pick up the extension.
+
 ### Local VSIX
 
 Use **Extensions: Install from VSIX...** from the Command Palette, or run:
